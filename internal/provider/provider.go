@@ -175,10 +175,10 @@ func (snapshot Snapshot) Valid() bool {
 	return true
 }
 
-// UsableAt reports whether a structurally valid snapshot may establish a new
-// provider tunnel at now.
-func (snapshot Snapshot) UsableAt(now time.Time) bool {
-	return snapshot.Valid() && snapshot.ExpiresAt.After(now)
+// UsableAt reports whether the snapshot contains structurally valid authority.
+// ExpiresAt is a refresh hint, never an admission or deletion deadline.
+func (snapshot Snapshot) UsableAt(_ time.Time) bool {
+	return snapshot.Valid()
 }
 
 func (snapshot Snapshot) Clone() Snapshot {

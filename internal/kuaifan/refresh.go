@@ -106,7 +106,8 @@ func (driver *Driver) Login(ctx context.Context, credentials provider.Credential
 	if err != nil {
 		return provider.Snapshot{}, err
 	}
-	return driver.snapshot(profiles, account)
+	stored, _ := updatedDriverState(driverState{}, sessions)
+	return driver.snapshot(profiles, account, stored)
 }
 
 func (driver *Driver) Refresh(ctx context.Context, current provider.Snapshot) (provider.Snapshot, error) {
@@ -117,23 +118,36 @@ func (driver *Driver) Refresh(ctx context.Context, current provider.Snapshot) (p
 	if err != nil {
 		return provider.Snapshot{}, provider.ErrNoSession
 	}
-	sessions, err := driver.refreshBoth(ctx, stored)
-	if err != nil {
-		return provider.Snapshot{}, err
+	sessions, refreshErr := driver.refreshBoth(ctx, stored)
+	stored, refreshed := updatedDriverState(stored, sessions)
+	var partial provider.Snapshot
+	if refreshed {
+		encoded, err := json.Marshal(stored)
+		if err != nil {
+			return provider.Snapshot{}, fmt.Errorf("kuaifan: encode refresh state: %w", err)
+		}
+		partial = provider.Snapshot{Provider: ProviderID, RefreshState: encoded}
+	}
+	if refreshErr != nil {
+		return partial, refreshErr
 	}
 	profiles, err := driver.fetchBothProfiles(ctx, sessions, true)
 	if err != nil {
-		return provider.Snapshot{}, err
+		return partial, err
 	}
 	account, err := aggregateProviderAccount(current.Account.Display, profiles, driver.now().UTC())
 	if err != nil {
-		return provider.Snapshot{}, err
+		return partial, err
 	}
-	return driver.snapshot(profiles, account)
+	next, err := driver.snapshot(profiles, account, stored)
+	if err != nil {
+		return partial, err
+	}
+	return next, nil
 }
 
 func (driver *Driver) loginBoth(ctx context.Context, input EmailLogin) ([2]LoginSession, error) {
-	return parallelSessions(ctx, driver.clients, func(child context.Context, client *Client) (LoginSession, error) {
+	return parallelSessions(ctx, driver.clients, false, func(child context.Context, client *Client) (LoginSession, error) {
 		copyInput := input
 		session, err := client.Login(child, copyInput)
 		copyInput.Password = ""
@@ -157,8 +171,26 @@ type storedLoginSession struct {
 	Token  string `json:"token"`
 }
 
+// A rejected profile retains its prior token so a later refresh can retry it.
+func updatedDriverState(current driverState, sessions [2]LoginSession) (driverState, bool) {
+	refreshed := false
+	for index, session := range sessions {
+		if session.UserID <= 0 || session.Token == "" {
+			continue
+		}
+		stored := storedLoginSession{UserID: session.UserID, Token: session.Token}
+		if index == 0 {
+			current.IOS = stored
+		} else {
+			current.Windows = stored
+		}
+		refreshed = true
+	}
+	return current, refreshed
+}
+
 func (driver *Driver) refreshBoth(ctx context.Context, current driverState) ([2]LoginSession, error) {
-	return parallelSessions(ctx, driver.clients, func(child context.Context, client *Client) (LoginSession, error) {
+	return parallelSessions(ctx, driver.clients, true, func(child context.Context, client *Client) (LoginSession, error) {
 		stored := current.IOS
 		if client.Profile() == wireprofile.WindowsID {
 			stored = current.Windows
@@ -175,7 +207,7 @@ func (driver *Driver) refreshBoth(ctx context.Context, current driverState) ([2]
 	})
 }
 
-func parallelSessions(ctx context.Context, clients [2]*Client, call func(context.Context, *Client) (LoginSession, error)) ([2]LoginSession, error) {
+func parallelSessions(ctx context.Context, clients [2]*Client, tolerateRejection bool, call func(context.Context, *Client) (LoginSession, error)) ([2]LoginSession, error) {
 	child, cancel := context.WithCancel(ctx)
 	defer cancel()
 	type result struct {
@@ -191,17 +223,31 @@ func parallelSessions(ctx context.Context, clients [2]*Client, call func(context
 		}()
 	}
 	var sessions [2]LoginSession
-	var firstErr error
+	var firstErr, rejection error
 	for range clients {
 		result := <-results
-		if result.err != nil && firstErr == nil {
-			firstErr = result.err
-			cancel()
+		if result.err != nil {
+			if tolerateRejection && errors.Is(result.err, provider.ErrSessionRejected) {
+				rejection = result.err
+			} else if firstErr == nil {
+				firstErr = result.err
+				cancel()
+			}
+			continue
 		}
 		sessions[result.index] = result.session
 	}
 	if firstErr != nil {
-		return [2]LoginSession{}, firstErr
+		if rejection != nil && sessions[0].UserID <= 0 && sessions[1].UserID <= 0 {
+			return sessions, rejection
+		}
+		return sessions, firstErr
+	}
+	if rejection != nil {
+		if sessions[0].UserID > 0 || sessions[1].UserID > 0 {
+			return sessions, nil
+		}
+		return sessions, rejection
 	}
 	if sessions[0].UserID <= 0 || sessions[0].UserID != sessions[1].UserID {
 		return [2]LoginSession{}, ErrSchema
@@ -227,20 +273,37 @@ func (driver *Driver) fetchBothProfiles(ctx context.Context, sessions [2]LoginSe
 	results := make(chan result, len(driver.clients))
 	for index, client := range driver.clients {
 		go func() {
-			authority, lines, err := driver.fetchAuthorityAndLines(child, client, sessions[index], retryRequests)
-			if err != nil {
-				cancel()
+			if sessions[index].UserID <= 0 {
+				results <- result{index: index}
+				return
 			}
+			authority, lines, err := driver.fetchAuthorityAndLines(child, client, sessions[index], retryRequests)
 			results <- result{index: index, profile: completeProfile{client: client, session: sessions[index], authority: authority, lines: lines}, err: err}
 		}()
 	}
 	var profiles [2]completeProfile
+	var firstErr, rejection error
 	for range driver.clients {
 		result := <-results
 		if result.err != nil {
-			return [2]completeProfile{}, result.err
+			if retryRequests && errors.Is(result.err, provider.ErrSessionRejected) {
+				rejection = result.err
+			} else if firstErr == nil {
+				firstErr = result.err
+				cancel()
+			}
+			continue
 		}
 		profiles[result.index] = result.profile
+	}
+	if firstErr != nil {
+		if rejection != nil && profiles[0].client == nil && profiles[1].client == nil {
+			return profiles, rejection
+		}
+		return profiles, firstErr
+	}
+	if profiles[0].client == nil && profiles[1].client == nil {
+		return profiles, rejection
 	}
 	return profiles, nil
 }
@@ -263,7 +326,6 @@ func (driver *Driver) fetchAuthorityAndLines(ctx context.Context, client *Client
 			authority, err = client.FetchAuthority(child, session)
 		}
 		if err != nil {
-			cancel()
 			results <- result{err: err}
 			return
 		}
@@ -278,7 +340,6 @@ func (driver *Driver) fetchAuthorityAndLines(ctx context.Context, client *Client
 			lines, err = client.FetchLines(child, session)
 		}
 		if err != nil {
-			cancel()
 			results <- result{err: err}
 			return
 		}
@@ -286,10 +347,12 @@ func (driver *Driver) fetchAuthorityAndLines(ctx context.Context, client *Client
 	}()
 	var authority Authority
 	var lines Lines
+	var firstErr error
 	for range 2 {
 		result := <-results
-		if result.err != nil {
-			return Authority{}, Lines{}, result.err
+		if result.err != nil && firstErr == nil {
+			firstErr = result.err
+			cancel()
 		}
 		if result.authority != nil {
 			authority = *result.authority
@@ -298,6 +361,9 @@ func (driver *Driver) fetchAuthorityAndLines(ctx context.Context, client *Client
 			lines = *result.lines
 		}
 	}
+	if firstErr != nil {
+		return Authority{}, Lines{}, firstErr
+	}
 	if authority.ProviderToken == "" || session.Token == "" || len(lines.Lines) == 0 {
 		return Authority{}, Lines{}, ErrSchema
 	}
@@ -305,21 +371,29 @@ func (driver *Driver) fetchAuthorityAndLines(ctx context.Context, client *Client
 }
 
 func aggregateProviderAccount(display string, profiles [2]completeProfile, now time.Time) (provider.Account, error) {
-	if display == "" || profiles[0].session.UserID <= 0 || profiles[0].session.UserID != profiles[1].session.UserID {
+	if display == "" {
 		return provider.Account{}, ErrSchema
 	}
-	active := profiles[0].session.Profile.IsVIP && profiles[1].session.Profile.IsVIP
-	subscriptionEndsAt := time.Time{}
-	if active {
-		subscriptionEndsAt = profiles[0].session.Profile.VIPEndsAt
-		if other := profiles[1].session.Profile.VIPEndsAt; subscriptionEndsAt.IsZero() || !other.IsZero() && other.Before(subscriptionEndsAt) {
-			subscriptionEndsAt = other
+	var userID int32
+	active := true
+	var subscriptionEndsAt time.Time
+	for _, profile := range profiles {
+		if profile.session.UserID <= 0 {
+			continue
 		}
-		if subscriptionEndsAt.IsZero() {
+		if userID != 0 && profile.session.UserID != userID {
 			return provider.Account{}, ErrSchema
 		}
-		active = subscriptionEndsAt.After(now)
+		userID = profile.session.UserID
+		active = active && profile.session.Profile.IsVIP
+		if other := profile.session.Profile.VIPEndsAt; subscriptionEndsAt.IsZero() || !other.IsZero() && other.Before(subscriptionEndsAt) {
+			subscriptionEndsAt = other
+		}
 	}
+	if userID <= 0 || active && subscriptionEndsAt.IsZero() {
+		return provider.Account{}, ErrSchema
+	}
+	active = active && subscriptionEndsAt.After(now)
 	tier := standardTier
 	if active {
 		tier = vipTier
@@ -327,7 +401,7 @@ func aggregateProviderAccount(display string, profiles [2]completeProfile, now t
 		subscriptionEndsAt = time.Time{}
 	}
 	return provider.Account{
-		UserID: formatUserID(profiles[0].session.UserID), Display: display, Tier: tier,
+		UserID: formatUserID(userID), Display: display, Tier: tier,
 		SubscriptionActive: active, SubscriptionEndsAt: subscriptionEndsAt,
 	}, nil
 }
@@ -338,16 +412,16 @@ type tunnelAuthority struct {
 	Extension string `json:"extension"`
 }
 
-func (driver *Driver) snapshot(profiles [2]completeProfile, account provider.Account) (provider.Snapshot, error) {
-	stateBytes, err := json.Marshal(driverState{
-		IOS:     storedLoginSession{UserID: profiles[0].session.UserID, Token: profiles[0].session.Token},
-		Windows: storedLoginSession{UserID: profiles[1].session.UserID, Token: profiles[1].session.Token},
-	})
+func (driver *Driver) snapshot(profiles [2]completeProfile, account provider.Account, stored driverState) (provider.Snapshot, error) {
+	stateBytes, err := json.Marshal(stored)
 	if err != nil {
 		return provider.Snapshot{}, ErrSchema
 	}
 	authorities := make(map[string]provider.Authority, len(profiles))
 	for _, profile := range profiles {
+		if profile.client == nil {
+			continue
+		}
 		encoded, err := json.Marshal(tunnelAuthority{
 			Password: profile.authority.EncryptKey, Method: profile.authority.EncryptType, Extension: profile.authority.ProviderExtension,
 		})
@@ -478,7 +552,7 @@ func retry[T any](ctx context.Context, driver *Driver, call func() (T, error)) (
 }
 
 func retryable(err error) bool {
-	if err == nil || errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) ||
+	if err == nil || errors.Is(err, context.Canceled) ||
 		errors.Is(err, ErrLoginRejected) || errors.Is(err, ErrBusinessStatus) || errors.Is(err, ErrSchema) ||
 		errors.Is(err, ErrInvalidEnvelope) || errors.Is(err, ErrInvalidPadding) || errors.Is(err, ErrMalformedCiphertext) ||
 		errors.Is(err, ErrResponseTooLarge) || errors.Is(err, ErrUnsupportedCipher) || errors.Is(err, ErrInvalidLine) {

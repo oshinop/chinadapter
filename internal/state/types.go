@@ -295,14 +295,11 @@ func ValidateRuntimeSnapshot(snapshot *RuntimeSnapshot) error {
 	if snapshot == nil || snapshot.Generation == 0 || snapshot.CreatedAt.IsZero() || snapshot.ExpiresAt.IsZero() {
 		return fmt.Errorf("%w: missing generation, creation time, or expiry", ErrInvalidSnapshot)
 	}
-	if !snapshot.ExpiresAt.After(snapshot.CreatedAt) || snapshot.ExpiresAt.Sub(snapshot.CreatedAt) > maxSessionLifetime {
-		return fmt.Errorf("%w: invalid session lifetime", ErrInvalidSnapshot)
-	}
 	if len(snapshot.Nodes) > maxRuntimeNodes || len(snapshot.Selectors) > maxRuntimeSelectorRefs {
 		return fmt.Errorf("%w: runtime snapshot exceeds selector bounds", ErrInvalidSnapshot)
 	}
 	for id, providerSnapshot := range snapshot.Providers {
-		if providerSnapshot.Provider != id || !providerSnapshot.Valid() || !providerSnapshot.ExpiresAt.After(snapshot.CreatedAt) || providerSnapshot.ExpiresAt.Sub(snapshot.CreatedAt) > maxSessionLifetime {
+		if providerSnapshot.Provider != id || !providerSnapshot.Valid() {
 			return fmt.Errorf("%w: invalid provider snapshot", ErrInvalidSnapshot)
 		}
 	}

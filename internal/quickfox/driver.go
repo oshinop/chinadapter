@@ -76,7 +76,7 @@ func (driver *Driver) Login(ctx context.Context, credentials provider.Credential
 		}
 		return provider.Snapshot{}, err
 	}
-	catalog, err := driver.client.Catalog(ctx, session.Token, session.DeviceCode)
+	catalog, err := driver.retryCatalog(ctx, session.Token, session.DeviceCode)
 	if err != nil {
 		return provider.Snapshot{}, err
 	}
@@ -94,7 +94,7 @@ func (driver *Driver) Refresh(ctx context.Context, current provider.Snapshot) (p
 	if err != nil {
 		return provider.Snapshot{}, provider.ErrNoSession
 	}
-	catalog, err := driver.client.Catalog(ctx, stored.Token, stored.DeviceCode)
+	catalog, err := driver.retryCatalog(ctx, stored.Token, stored.DeviceCode)
 	if err != nil {
 		return provider.Snapshot{}, err
 	}

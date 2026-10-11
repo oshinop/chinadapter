@@ -115,30 +115,19 @@ func NewManagerWithSubscription(initial *RuntimeSnapshot, subscription Subscript
 	if len(subscription.AccountBinding) != 0 && len(bindingKey) != sha256.Size {
 		return nil, ErrAccountChanged
 	}
-	prepared := initial
-	now := time.Now()
-	if initial != nil && now.Before(initial.CreatedAt) {
-		prepared = nil
-	} else if initial != nil && (ValidateRuntimeSnapshot(initial) != nil || !SessionUsable(initial, now)) {
-		prepared = initial.Clone()
-		prepared.Providers = nil
-		if now.Before(prepared.ExpiresAt) {
-			prepared.ExpiresAt = now.UTC()
-		}
-	}
-	store, err := NewRuntimeStore(prepared)
+	store, err := NewRuntimeStore(initial)
 	if err != nil {
 		return nil, err
 	}
 	manager := &Manager{runtime: store, state: StateSignedOut, subscription: subscription.clone(), accountBindingKey: append([]byte(nil), bindingKey...), bindingKeyConfigured: len(bindingKey) == sha256.Size}
 	if initial != nil {
-		if ValidateRuntimeSnapshot(initial) == nil && SessionUsable(initial, now) {
+		if SessionUsable(initial, time.Time{}) {
 			if !manager.bindingKeyConfigured || len(subscription.AccountBinding) != sha256.Size || !matchesAccountBinding(subscription.AccountBinding, bindingKey, initial.AccountBindingID()) {
 				return nil, ErrAccountChanged
 			}
 			manager.state = StateReady
-		} else if prepared != nil && len(prepared.Nodes) != 0 {
-			manager.state = StateExpired
+		} else if len(initial.Nodes) != 0 {
+			manager.state = StateSignedOut
 		}
 	}
 	return manager, nil
@@ -198,7 +187,7 @@ func (m *Manager) CompactPin(selector string, now time.Time) (TunnelPin, error) 
 	}
 	authority, available := current.Authority(node)
 	providerSnapshot, providerAvailable := current.Providers[node.Provider]
-	if !available || !providerAvailable || !providerSnapshot.ExpiresAt.After(now) {
+	if !available || !providerAvailable {
 		return TunnelPin{}, ErrSelectorUnknown
 	}
 	return TunnelPin{Authority: authority, ExpiresAt: providerSnapshot.ExpiresAt, Node: node, Ref: ref}, nil
@@ -280,13 +269,13 @@ func (m *Manager) AccountBindingStatus(userID string) AccountBindingStatus {
 	return AccountBindingMismatch
 }
 
-func currentSessionMatchesPin(current *RuntimeSnapshot, pin TunnelPin, now time.Time) bool {
+func currentSessionMatchesPin(current *RuntimeSnapshot, pin TunnelPin, _ time.Time) bool {
 	if current == nil {
 		return false
 	}
-	providerSnapshot, available := current.Providers[pin.Node.Provider]
+	_, available := current.Providers[pin.Node.Provider]
 	authority, authorityAvailable := current.Authority(pin.Node)
-	return available && providerSnapshot.ExpiresAt.After(now) && providerSnapshot.ExpiresAt.Equal(pin.ExpiresAt) && authorityAvailable &&
+	return available && authorityAvailable &&
 		authority.Protocol == pin.Authority.Protocol && subtle.ConstantTimeCompare(authority.Data, pin.Authority.Data) == 1
 }
 
@@ -402,8 +391,6 @@ func (m *Manager) finish(lease uint64, operation Operation, outcome Outcome) {
 	switch {
 	case SessionUsable(current, time.Now()):
 		m.state = StateDegraded
-	case current != nil && !current.ExpiresAt.IsZero() && !time.Now().Before(current.ExpiresAt):
-		m.expireLocked(time.Now())
 	default:
 		m.state = StateError
 	}
@@ -519,47 +506,9 @@ func (m *Manager) signOutLocked() {
 // MarkDegraded preserves the current complete generation after a refresh error.
 func (m *Manager) MarkDegraded() error { return m.Transition(StateDegraded) }
 
-// MarkExpired makes all newly fetched snapshots fail the expiry check while
-// leaving earlier pinned snapshots available for bounded existing-flow drain.
-func (m *Manager) MarkExpired(now time.Time) error {
-	if m == nil {
-		return ErrInvalidTransition
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.state == StateExpired {
-		m.expireLocked(now)
-		return nil
-	}
-	if m.state != StateReady && m.state != StateDegraded && m.state != StateSyncing && m.state != StateError {
-		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, m.state, StateExpired)
-	}
-	m.expireLocked(now)
-	return nil
-}
-
-// expireLocked publishes a secret-free expired view. It must be called while
-// m.mu is held; snapshots already held by established relays remain unchanged.
-func (m *Manager) expireLocked(now time.Time) {
-	current := m.runtime.Current()
-	if current != nil {
-		current.ExpiresAt = now.UTC()
-		current.Providers = nil
-		m.runtime.replace(current)
-	}
-	m.state = StateExpired
-}
-
-// SessionUsable reports whether at least one complete provider account may
-// establish a new tunnel at now.
-func SessionUsable(snapshot *RuntimeSnapshot, now time.Time) bool {
-	if snapshot == nil || snapshot.CreatedAt.IsZero() || snapshot.ExpiresAt.IsZero() || now.Before(snapshot.CreatedAt) || !now.Before(snapshot.ExpiresAt) {
-		return false
-	}
-	for _, providerSnapshot := range snapshot.Providers {
-		if providerSnapshot.ExpiresAt.After(now) {
-			return true
-		}
-	}
-	return false
+// SessionUsable reports whether a validated aggregate retains provider
+// accounts. Elapsed time alone never invalidates stored session authority.
+// Structural validation belongs at publication, not on every tunnel admission.
+func SessionUsable(snapshot *RuntimeSnapshot, _ time.Time) bool {
+	return snapshot != nil && len(snapshot.Providers) != 0
 }

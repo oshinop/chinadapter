@@ -10,6 +10,7 @@ import (
 	"sync/atomic"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -18,11 +19,9 @@ import (
 )
 
 const (
-	defaultProbeTimeout       = 5 * time.Second
-	minRefreshPolicy          = 15 * time.Minute
-	maxRefreshPolicy          = 24 * time.Hour
-	refreshExpirySafetyMargin = 30 * time.Minute
-	refreshRetryAttemptBudget = 5 * time.Minute
+	defaultProbeTimeout = 5 * time.Second
+	minRefreshPolicy    = 15 * time.Minute
+	maxRefreshPolicy    = 24 * time.Hour
 )
 
 var errRuntimeStopped = errors.New("app: runtime stopped")
@@ -159,7 +158,6 @@ type ProviderController interface {
 	Login(context.Context, provider.ID, provider.Credentials) (provider.Account, error)
 	Refresh(context.Context, provider.ID) error
 	Logout(context.Context, provider.ID) error
-	Expire(time.Time) (bool, error)
 }
 
 // SubscriptionPublisher prepares and atomically persists the subscription,
@@ -178,6 +176,7 @@ type RuntimeConfig struct {
 	Store         *state.SQLiteStore
 	Providers     ProviderController
 	Subscriptions SubscriptionPublisher
+	Accounts      accounts.Lifecycle
 	Selectors     *SelectorCoordinator
 	MutationMu    *sync.Mutex
 
@@ -189,6 +188,7 @@ type RuntimeConfig struct {
 	DialContext     func(context.Context, string, string) (net.Conn, error)
 	ProbeTimeout    time.Duration
 	RefreshEvery    time.Duration
+	AccountRefresh  func(provider.ID, error)
 	ProbeConcurrent int
 	EventClients    int
 	EventBuffer     int
@@ -200,6 +200,7 @@ type Runtime struct {
 	manager       *state.Manager
 	store         *state.SQLiteStore
 	providers     ProviderController
+	accounts      accounts.Lifecycle
 	subscriptions SubscriptionPublisher
 	selectors     *SelectorCoordinator
 
@@ -212,13 +213,10 @@ type Runtime struct {
 	probeTimeout time.Duration
 	probeSlots   chan struct{}
 
-	mutations     *sync.Mutex
-	mu            sync.RWMutex
-	refreshEvery  time.Duration
-	lastRefreshAt time.Time
-	nextRefreshAt time.Time
-	alive         atomic.Bool
-	events        *eventHub
+	mutations    *sync.Mutex
+	refreshEvery time.Duration
+	alive        atomic.Bool
+	events       *eventHub
 }
 
 // NewRuntime validates the dependencies needed by every web.Backend method.
@@ -263,27 +261,6 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if mutationMu == nil {
 		mutationMu = &sync.Mutex{}
 	}
-	runtimeNow := config.Now().UTC()
-	if persistent.ActiveSession != nil && !state.SessionUsable(persistent.ActiveSession, runtimeNow) {
-		managerState := config.Manager.State()
-		if managerState == state.StateReady || managerState == state.StateDegraded {
-			if err := config.Manager.MarkExpired(runtimeNow); err != nil {
-				return nil, err
-			}
-		}
-		persistent, err = config.Store.Update(func(candidate *state.PersistentState) error {
-			candidate.ActiveSession = nil
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
-	lastRefreshAt, nextRefreshAt := time.Time{}, time.Time{}
-	if state.SessionUsable(persistent.ActiveSession, runtimeNow) {
-		lastRefreshAt = persistent.ActiveSession.CreatedAt.UTC()
-		nextRefreshAt = boundedRefreshAt(lastRefreshAt, providerRefreshExpiry(persistent.ActiveSession), config.RefreshEvery)
-	}
 	runtime := &Runtime{
 		manager: config.Manager, store: config.Store, providers: config.Providers,
 		subscriptions: config.Subscriptions, selectors: config.Selectors,
@@ -291,9 +268,25 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		version:   config.Version,
 		startedAt: config.StartedAt.UTC(), now: config.Now, dial: config.DialContext,
 		probeTimeout: config.ProbeTimeout, probeSlots: make(chan struct{}, config.ProbeConcurrent), mutations: mutationMu,
-		refreshEvery: config.RefreshEvery, lastRefreshAt: lastRefreshAt, nextRefreshAt: nextRefreshAt,
-		events: newEventHub(config.EventClients, config.EventBuffer),
+		refreshEvery: config.RefreshEvery,
+		events:       newEventHub(config.EventClients, config.EventBuffer),
 	}
+	if config.Accounts == nil {
+		supervisor, err := accounts.New(accounts.Config{
+			Controller: config.Providers, Snapshots: config.Manager, RefreshEvery: config.RefreshEvery, Now: config.Now,
+			OnRefresh: func(id provider.ID, err error) {
+				runtime.publish("refresh", refreshEvent{State: string(runtime.manager.State()), Complete: err == nil})
+				if config.AccountRefresh != nil {
+					config.AccountRefresh(id, err)
+				}
+			},
+		})
+		if err != nil {
+			return nil, err
+		}
+		config.Accounts = supervisor
+	}
+	runtime.accounts = config.Accounts
 	runtime.alive.Store(true)
 	return runtime, nil
 }
@@ -311,6 +304,7 @@ func (r *Runtime) Stop() {
 		return
 	}
 	r.alive.Store(false)
+	r.accounts.Stop()
 	r.mutations.Lock()
 	r.manager.SignOut()
 	r.mutations.Unlock()
@@ -322,21 +316,12 @@ func (r *Runtime) RefreshEvery() time.Duration {
 	if r == nil || !r.alive.Load() {
 		return 0
 	}
-	r.mu.RLock()
-	defer r.mu.RUnlock()
 	return r.refreshEvery
 }
 
-// RefreshDue reports whether a previously scheduled authenticated refresh is
-// due. A zero schedule means no login has completed in this process.
-func (r *Runtime) RefreshDue(now time.Time) bool {
-	if r == nil || !r.alive.Load() {
-		return false
-	}
-	r.mu.RLock()
-	next := r.nextRefreshAt
-	r.mu.RUnlock()
-	return !next.IsZero() && !now.Before(next)
+// RunAccounts runs the independent provider schedules as a lifecycle worker.
+func (r *Runtime) RunAccounts(ctx context.Context) error {
+	return r.accounts.Start(ctx)
 }
 
 // AccessStatus reports only whether an access-token verifier is configured.
@@ -435,9 +420,19 @@ func (r *Runtime) Status(context.Context) (web.Status, error) {
 	if err != nil {
 		return web.Status{}, err
 	}
-	r.mu.RLock()
-	lastRefreshAt, nextRefreshAt := r.lastRefreshAt, r.nextRefreshAt
-	r.mu.RUnlock()
+	schedules := r.accounts.Status()
+	var lastRefreshAt, nextRefreshAt time.Time
+	for _, schedule := range schedules {
+		if schedule.LastSuccess.After(lastRefreshAt) {
+			lastRefreshAt = schedule.LastSuccess
+		}
+		if !schedule.NextRun.IsZero() && (nextRefreshAt.IsZero() || schedule.NextRun.Before(nextRefreshAt)) {
+			nextRefreshAt = schedule.NextRun
+		}
+		if schedule.Status != accounts.StatusOK {
+			status.State = state.StateDegraded
+		}
+	}
 	result := web.Status{
 		State:        string(status.State),
 		Version:      r.version,
@@ -453,7 +448,10 @@ func (r *Runtime) Status(context.Context) (web.Status, error) {
 	if len(status.Accounts) != 0 {
 		result.Accounts = make(map[string]web.Account, len(status.Accounts))
 		for id, account := range status.Accounts {
-			result.Accounts[string(id)] = browserAccount(string(id), account.Display, account.Tier, account.SubscriptionActive, account.SubscriptionEndsAt)
+			view := browserAccount(string(id), account.Display, account.Tier, account.SubscriptionActive, account.SubscriptionEndsAt)
+			schedule := schedules[id]
+			view.RefreshStatus, view.LastRefreshAt, view.NextRefreshAt = schedule.Status, schedule.LastSuccess, schedule.NextRun
+			result.Accounts[string(id)] = view
 		}
 	}
 	if current := r.manager.Current(); current != nil {
@@ -509,11 +507,6 @@ func (r *Runtime) NodeDetails(_ context.Context, nodeID string) (web.NodeDetails
 	if !r.alive.Load() {
 		return web.NodeDetails{}, errRuntimeStopped
 	}
-	r.mutations.Lock()
-	defer r.mutations.Unlock()
-	if !r.alive.Load() {
-		return web.NodeDetails{}, errRuntimeStopped
-	}
 	current := r.manager.Current()
 	if !state.SessionUsable(current, r.now()) {
 		return web.NodeDetails{}, errors.New("app: no usable node snapshot")
@@ -559,11 +552,6 @@ func (r *Runtime) Login(ctx context.Context, input web.LoginInput) (web.Account,
 	if !id.Valid() {
 		return web.Account{}, classifyLoginError(provider.ErrUnknownProvider)
 	}
-	r.mutations.Lock()
-	defer r.mutations.Unlock()
-	if !r.alive.Load() {
-		return web.Account{}, classifyLoginError(errRuntimeStopped)
-	}
 	persistent, err := r.store.Load()
 	if err != nil {
 		return web.Account{}, classifyLoginError(err)
@@ -584,7 +572,9 @@ func (r *Runtime) Login(ctx context.Context, input web.LoginInput) (web.Account,
 		return web.Account{}, classifyLoginError(errors.New("login did not publish the selected provider"))
 	}
 	result := browserAccount(string(id), account.Display, account.Tier, account.SubscriptionActive, account.SubscriptionEndsAt)
-	r.recordRefresh()
+	r.accounts.RecordSuccess(id)
+	schedule := r.accounts.Status()[id]
+	result.RefreshStatus, result.LastRefreshAt, result.NextRefreshAt = schedule.Status, schedule.LastSuccess, schedule.NextRun
 	r.publishState()
 	return result, nil
 }
@@ -603,14 +593,10 @@ func (r *Runtime) Logout(ctx context.Context, providerID string) error {
 	if !id.Valid() {
 		return provider.ErrUnknownProvider
 	}
-	r.mutations.Lock()
-	defer r.mutations.Unlock()
-	if !r.alive.Load() {
-		return errRuntimeStopped
-	}
 	if err := r.providers.Logout(ctx, id); err != nil {
 		return err
 	}
+	_ = r.accounts.Status()
 	r.publishState()
 	return nil
 }
@@ -628,13 +614,8 @@ func (r *Runtime) Refresh(ctx context.Context, providerID string) error {
 	if providerID != "" && !id.Valid() {
 		return provider.ErrUnknownProvider
 	}
-	r.mutations.Lock()
-	defer r.mutations.Unlock()
-	if !r.alive.Load() {
-		return errRuntimeStopped
-	}
 	before := r.manager.Current()
-	if err := r.providers.Refresh(ctx, id); err != nil {
+	if err := r.accounts.Trigger(ctx, id); err != nil {
 		r.publish("refresh", refreshEvent{State: string(r.manager.State()), Complete: false})
 		return err
 	}
@@ -642,49 +623,7 @@ func (r *Runtime) Refresh(ctx context.Context, providerID string) error {
 	if current == nil || before == nil || current.Generation <= before.Generation || !state.SessionUsable(current, r.now()) {
 		return errors.New("app: refresh did not commit a new complete generation")
 	}
-	r.recordRefresh()
 	r.publish("refresh", refreshEvent{State: string(r.manager.State()), Complete: true})
-	return nil
-}
-
-// Heartbeat expires stale authority and invokes a bounded refresh only for an
-// authenticated service.
-func (r *Runtime) Heartbeat(ctx context.Context, refresh bool) error {
-	if r == nil {
-		return errors.New("app: runtime unavailable")
-	}
-	if !r.alive.Load() {
-		return errRuntimeStopped
-	}
-	r.mutations.Lock()
-	if !r.alive.Load() {
-		r.mutations.Unlock()
-		return errRuntimeStopped
-	}
-	expired, err := r.providers.Expire(r.now())
-	r.mutations.Unlock()
-
-	if err != nil {
-		return err
-	}
-	if expired {
-		r.publishState()
-		return nil
-	}
-	if !refresh {
-		return nil
-	}
-	stateNow := r.manager.State()
-	if stateNow != state.StateReady && stateNow != state.StateDegraded {
-		return nil
-	}
-	if err := r.Refresh(ctx, ""); err != nil {
-		// This path is reached only by the periodic worker. Manual Refresh
-		// remains immediate, while a failed scheduled refresh cannot create a
-		// minute-by-minute control-plane retry storm.
-		r.scheduleRefreshRetry()
-		return err
-	}
 	return nil
 }
 
@@ -697,33 +636,24 @@ func (r *Runtime) Probe(ctx context.Context, nodeID string) (web.ProbeResult, er
 	if !r.alive.Load() {
 		return web.ProbeResult{}, errRuntimeStopped
 	}
+	current := r.manager.Current()
+	if !state.SessionUsable(current, r.now()) {
+		return web.ProbeResult{}, &probeProblem{cause: provider.ErrNoSession, code: "node_snapshot_unavailable", status: http.StatusConflict}
+	}
+	node, found := current.NodeByID(nodeID)
+	if !found {
+		return web.ProbeResult{}, &probeProblem{cause: errors.New("node not found"), code: "node_not_found", status: http.StatusNotFound}
+	}
+	if !node.TunnelEligible() {
+		return web.ProbeResult{}, &probeProblem{cause: errors.New("node ineligible"), code: "node_ineligible", status: http.StatusConflict}
+	}
+	target := probeTarget{id: node.ID, selector: node.Selector, provider: string(node.Provider), host: node.Host, port: node.Port}
 	select {
 	case r.probeSlots <- struct{}{}:
 		defer func() { <-r.probeSlots }()
 	default:
 		return web.ProbeResult{}, &probeProblem{cause: ErrProbeBusy, code: "probe_busy", status: http.StatusTooManyRequests}
 	}
-	r.mutations.Lock()
-	if !r.alive.Load() {
-		r.mutations.Unlock()
-		return web.ProbeResult{}, errRuntimeStopped
-	}
-	current := r.manager.Current()
-	if !state.SessionUsable(current, r.now()) {
-		r.mutations.Unlock()
-		return web.ProbeResult{}, &probeProblem{cause: provider.ErrNoSession, code: "node_snapshot_unavailable", status: http.StatusConflict}
-	}
-	node, found := current.NodeByID(nodeID)
-	if !found {
-		r.mutations.Unlock()
-		return web.ProbeResult{}, &probeProblem{cause: errors.New("node not found"), code: "node_not_found", status: http.StatusNotFound}
-	}
-	if !node.TunnelEligible() {
-		r.mutations.Unlock()
-		return web.ProbeResult{}, &probeProblem{cause: errors.New("node ineligible"), code: "node_ineligible", status: http.StatusConflict}
-	}
-	target := probeTarget{generation: current.Generation, id: node.ID, selector: node.Selector, provider: string(node.Provider), host: node.Host, port: node.Port}
-	r.mutations.Unlock()
 
 	probeCtx, cancel := context.WithTimeout(ctx, r.probeTimeout)
 	defer cancel()
@@ -772,16 +702,15 @@ func (r *Runtime) Probe(ctx context.Context, nodeID string) (web.ProbeResult, er
 }
 
 type probeTarget struct {
-	generation uint64
-	id         string
-	selector   string
-	provider   string
-	host       string
-	port       uint16
+	id       string
+	selector string
+	provider string
+	host     string
+	port     uint16
 }
 
 func (target probeTarget) matches(snapshot *state.RuntimeSnapshot) bool {
-	if snapshot == nil || snapshot.Generation != target.generation {
+	if snapshot == nil {
 		return false
 	}
 	node, found := snapshot.NodeByID(target.id)
@@ -808,8 +737,8 @@ func (r *Runtime) updateProbe(current *state.RuntimeSnapshot, nodeID string, hea
 	return next, nil
 }
 
-// CommitControlSnapshotLocked is the provider coordinator's final publication
-// callback. Runtime account mutations already hold the shared mutation lock.
+// CommitControlSnapshotLocked publishes a provider result under the shared
+// short mutation lock held by the coordinator, never around network I/O.
 func (r *Runtime) CommitControlSnapshotLocked(snapshot *state.RuntimeSnapshot) error {
 	if r == nil {
 		return errors.New("app: runtime unavailable")
@@ -921,72 +850,6 @@ func (r *Runtime) subscriptionMetadata() (web.SubscriptionMetadata, error) {
 		return web.SubscriptionMetadata{}, err
 	}
 	return web.SubscriptionMetadata{Active: metadata.Active, NodeCount: metadata.NodeCount}, nil
-}
-
-func providerRefreshExpiry(snapshot *state.RuntimeSnapshot) time.Time {
-	if snapshot == nil {
-		return time.Time{}
-	}
-	var earliest time.Time
-	for _, providerSnapshot := range snapshot.Providers {
-		if earliest.IsZero() || providerSnapshot.ExpiresAt.Before(earliest) {
-			earliest = providerSnapshot.ExpiresAt
-		}
-	}
-	return earliest
-}
-
-func boundedRefreshAt(base, expiresAt time.Time, every time.Duration) time.Time {
-	next := base.Add(every)
-	if expiresAt.IsZero() {
-		return next
-	}
-	deadline := expiresAt.UTC().Add(-refreshExpirySafetyMargin)
-	if next.After(deadline) {
-		return deadline
-	}
-	return next
-}
-
-func (r *Runtime) recordRefresh() {
-	now := r.now().UTC()
-	expiresAt := time.Time{}
-	if current := r.manager.Current(); current != nil {
-		expiresAt = providerRefreshExpiry(current)
-	}
-	r.mu.Lock()
-	r.lastRefreshAt = now
-	r.nextRefreshAt = boundedRefreshAt(now, expiresAt, r.refreshEvery)
-	r.mu.Unlock()
-}
-
-func (r *Runtime) scheduleRefreshRetry() {
-	if r == nil {
-		return
-	}
-	now := r.now().UTC()
-	expiresAt := time.Time{}
-	if current := r.manager.Current(); current != nil {
-		expiresAt = providerRefreshExpiry(current)
-	}
-	next := now.Add(minRefreshPolicy)
-	if !expiresAt.IsZero() {
-		deadline := expiresAt.UTC().Add(-refreshRetryAttemptBudget)
-		if !deadline.After(now) {
-			r.mu.Lock()
-			r.nextRefreshAt = time.Time{}
-			r.mu.Unlock()
-			return
-		}
-		if next.After(deadline) {
-			next = deadline
-		}
-	}
-	r.mu.Lock()
-	if r.nextRefreshAt.IsZero() || r.nextRefreshAt.Before(next) {
-		r.nextRefreshAt = next
-	}
-	r.mu.Unlock()
 }
 
 func (r *Runtime) publishState() {

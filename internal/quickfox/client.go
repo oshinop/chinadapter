@@ -42,6 +42,14 @@ var (
 	ErrInvalidLine   = errors.New("quickfox: invalid line")
 )
 
+type httpStatusError struct{ status int }
+
+func (err *httpStatusError) Error() string {
+	return fmt.Sprintf("quickfox: unexpected HTTP status %d", err.status)
+}
+
+func (err *httpStatusError) Unwrap() error { return ErrHTTPStatus }
+
 // Config configures the fixed-origin QuickFox HTTPS client.
 type Config struct {
 	Location       *time.Location
@@ -259,7 +267,7 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, token
 	}
 	defer response.Body.Close()
 	if response.StatusCode != http.StatusOK {
-		return ErrHTTPStatus
+		return &httpStatusError{status: response.StatusCode}
 	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {

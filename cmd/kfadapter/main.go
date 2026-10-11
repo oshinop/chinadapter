@@ -199,15 +199,6 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	if err != nil {
 		return nil, err
 	}
-	if persistent.ActiveSession != nil && !state.SessionUsable(persistent.ActiveSession, time.Now().UTC()) {
-		persistent, err = store.Update(func(candidate *state.PersistentState) error {
-			candidate.ActiveSession = nil
-			return nil
-		})
-		if err != nil {
-			return nil, err
-		}
-	}
 	var bindingKey []byte
 	if persistent.AccessTokenInitialized() {
 		if persistent.AccessTokenVerifier == nil {
@@ -281,6 +272,7 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	var runtimeFacade *app.Runtime
 	providerCoordinator, err := providercoordinator.New(providercoordinator.Config{
 		Providers: providers, Manager: manager, SelectorBuilder: selectorCoordinator,
+		MutationMu: mutationMu,
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
 			if runtimeFacade == nil {
 				return errors.New("runtime snapshot committer unavailable")
@@ -297,6 +289,12 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 		Selectors: selectorCoordinator, MutationMu: mutationMu, SocksAddress: proxyAddress, HTTPAddress: managementAddress,
 		Version: version, StartedAt: startedAt,
 		RefreshEvery: cfg.Provider.RefreshInterval.Value(), ProbeTimeout: cfg.Proxy.DialTimeout.Value(),
+		AccountRefresh: func(_ provider.ID, err error) {
+			if err != nil {
+				// Provider text may contain secrets; emit only its classification.
+				slog.Warn("provider refresh failed", "class", refreshErrorClass(err))
+			}
+		},
 	})
 	if err != nil {
 		return nil, err
@@ -405,7 +403,7 @@ func (d *adapter) runContext(ctx context.Context) (result error) {
 	supervisor, err := newAdapterSupervisor([]lifecycle.Worker{
 		{Name: "proxy", Run: d.runSOCKS, Shutdown: d.shutdownSOCKS},
 		{Name: "management", Run: d.runWeb, Shutdown: d.shutdownWeb},
-		{Name: "heartbeat", Run: d.runHeartbeat, Shutdown: func(context.Context) error { d.runtime.Stop(); return nil }},
+		{Name: "accounts", Run: d.runtime.RunAccounts, Shutdown: func(context.Context) error { d.runtime.Stop(); return nil }},
 		{Name: "watchdog", Run: lifecycle.Watchdog(10*time.Second, 3, d.watchdog)},
 	})
 	if err != nil {
@@ -441,24 +439,6 @@ func (d *adapter) shutdownWeb(ctx context.Context) error {
 	return d.httpServer.Shutdown(ctx)
 }
 
-func (d *adapter) runHeartbeat(ctx context.Context) error {
-	expiryTicker := time.NewTicker(time.Minute)
-	defer expiryTicker.Stop()
-	for {
-		select {
-		case <-ctx.Done():
-			return ctx.Err()
-		case now := <-expiryTicker.C:
-			// Refresh failures are normal degraded-control-plane events; they
-			// must not stop an otherwise healthy local adapter. Only the error
-			// class is logged so provider text never reaches the log.
-			if err := d.runtime.Heartbeat(ctx, d.runtime.RefreshDue(now)); err != nil {
-				slog.Warn("provider refresh failed", "class", refreshErrorClass(err))
-			}
-		}
-	}
-}
-
 func (d *adapter) watchdog(context.Context) error {
 	if !d.runtime.Healthy() {
 		return errors.New("runtime is stopped")
@@ -471,6 +451,8 @@ func (d *adapter) watchdog(context.Context) error {
 // underlying provider error, which may echo control-plane text.
 func refreshErrorClass(err error) string {
 	switch {
+	case errors.Is(err, provider.ErrSessionRejected):
+		return "session_rejected"
 	case errors.Is(err, provider.ErrLoginRejected):
 		return "login_rejected"
 	case errors.Is(err, provider.ErrNoSession):

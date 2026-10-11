@@ -357,7 +357,7 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 		return errBadAddress
 	}
 	// Authentication may have completed before a client supplies CONNECT. Do
-	// not let a stalled socket create a tunnel after logout, expiry, authority
+	// not let a stalled socket create a tunnel after logout, authority
 	// refresh, selector rotation, preference exclusion, or node replacement.
 	// Re-resolving returns a compact current pin and never clones a snapshot.
 	now = time.Now()
@@ -452,7 +452,7 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 }
 
 func samePinAuthority(left, right state.TunnelPin) bool {
-	return left.ExpiresAt.Equal(right.ExpiresAt) && left.Authority.Protocol == right.Authority.Protocol &&
+	return left.Authority.Protocol == right.Authority.Protocol &&
 		subtle.ConstantTimeCompare(left.Authority.Data, right.Authority.Data) == 1
 }
 

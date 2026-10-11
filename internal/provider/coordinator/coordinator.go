@@ -7,6 +7,7 @@ import (
 	"errors"
 	"fmt"
 	"sort"
+	"sync"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
@@ -20,6 +21,7 @@ type Config struct {
 	SelectorBuilder state.SelectorBuilder
 	CommitSnapshot  func(*state.RuntimeSnapshot) error
 	Clock           func() time.Time
+	MutationMu      *sync.Mutex
 }
 
 // Coordinator owns one independent account per registered provider.
@@ -29,6 +31,8 @@ type Coordinator struct {
 	builder   state.SelectorBuilder
 	commit    func(*state.RuntimeSnapshot) error
 	clock     func() time.Time
+	mutations *sync.Mutex
+	locks     map[provider.ID]*sync.Mutex
 }
 
 func New(config Config) (*Coordinator, error) {
@@ -38,7 +42,14 @@ func New(config Config) (*Coordinator, error) {
 	if config.Clock == nil {
 		config.Clock = time.Now
 	}
-	return &Coordinator{providers: config.Providers, manager: config.Manager, builder: config.SelectorBuilder, commit: config.CommitSnapshot, clock: config.Clock}, nil
+	if config.MutationMu == nil {
+		config.MutationMu = &sync.Mutex{}
+	}
+	locks := make(map[provider.ID]*sync.Mutex)
+	for _, id := range config.Providers.IDs() {
+		locks[id] = &sync.Mutex{}
+	}
+	return &Coordinator{providers: config.Providers, manager: config.Manager, builder: config.SelectorBuilder, commit: config.CommitSnapshot, clock: config.Clock, mutations: config.MutationMu, locks: locks}, nil
 }
 
 func (coordinator *Coordinator) IDs() []provider.ID {
@@ -53,37 +64,30 @@ func (coordinator *Coordinator) Login(ctx context.Context, id provider.ID, crede
 	if err != nil {
 		return provider.Account{}, err
 	}
-	complete, err := coordinator.manager.Begin(state.OperationLogin)
-	if err != nil {
-		return provider.Account{}, err
-	}
-	outcome := state.OutcomeFailed
-	defer func() { complete(outcome) }()
-	current := coordinator.manager.Current()
-	if current != nil {
+	lock := coordinator.locks[id]
+	lock.Lock()
+	defer lock.Unlock()
+	if current := coordinator.manager.Current(); current != nil {
 		if _, exists := current.Providers[id]; exists {
 			return provider.Account{}, provider.ErrAccountExists
 		}
 	}
-	providerSnapshot, err := driver.Login(ctx, credentials)
+	next, err := driver.Login(ctx, credentials)
 	credentials.Password = ""
 	if err != nil {
 		return provider.Account{}, err
 	}
-	if err := provider.ValidateSnapshot(providerSnapshot, id, coordinator.now()); err != nil {
+	if err := provider.ValidateSnapshot(next, id, coordinator.now()); err != nil {
 		return provider.Account{}, err
 	}
-	providers := coordinator.currentProviders()
-	providers[id] = providerSnapshot.Clone()
-	if err := coordinator.publish(providers); err != nil {
+	if err := coordinator.commitProvider(id, next, state.OperationLogin); err != nil {
 		return provider.Account{}, err
 	}
-	outcome = state.OutcomeSucceeded
-	return providerSnapshot.Account, nil
+	return next.Account, nil
 }
 
-// Refresh refreshes one provider or all active providers when id is empty. All
-// selected results commit atomically; one failure retains the prior aggregate.
+// Refresh commits each selected provider independently. One failure never
+// cancels another provider or discards another provider's successful refresh.
 func (coordinator *Coordinator) Refresh(ctx context.Context, id provider.ID) error {
 	current := coordinator.manager.Current()
 	if current == nil || len(current.Providers) == 0 {
@@ -93,45 +97,69 @@ func (coordinator *Coordinator) Refresh(ctx context.Context, id provider.ID) err
 	if err != nil {
 		return err
 	}
-	complete, err := coordinator.manager.Begin(state.OperationRefresh)
+	if len(ids) == 1 {
+		return coordinator.refresh(ctx, ids[0])
+	}
+	results := make(chan error, len(ids))
+	for _, providerID := range ids {
+		go func() { results <- coordinator.refresh(ctx, providerID) }()
+	}
+	var failures []error
+	for range ids {
+		if err := <-results; err != nil {
+			failures = append(failures, err)
+		}
+	}
+	return errors.Join(failures...)
+}
+
+func (coordinator *Coordinator) refresh(ctx context.Context, id provider.ID) error {
+	driver, err := coordinator.providers.Driver(id)
+	if err != nil {
+		return err
+	}
+	lock := coordinator.locks[id]
+	lock.Lock()
+	defer lock.Unlock()
+	previous, available := coordinator.manager.Current().Provider(id)
+	if !available {
+		return provider.ErrNoSession
+	}
+	next, refreshErr := driver.Refresh(ctx, previous)
+	if refreshErr != nil {
+		if next.Provider == id && len(next.RefreshState) != 0 {
+			// Only the rotated refresh token is durable on a partial result.
+			// Catalog, account and tunnel authority remain the last good view.
+			previous.RefreshState = append([]byte(nil), next.RefreshState...)
+			if err := provider.ValidateSnapshot(previous, id, coordinator.now()); err != nil {
+				return errors.Join(refreshErr, err)
+			}
+			if err := coordinator.commitProvider(id, previous, state.OperationRefresh); err != nil {
+				return errors.Join(refreshErr, err)
+			}
+		}
+		return refreshErr
+	}
+	if err := provider.ValidateSnapshot(next, id, coordinator.now()); err != nil {
+		return err
+	}
+	return coordinator.commitProvider(id, next, state.OperationRefresh)
+}
+
+// commitProvider rebases on concurrent changes to other providers and probes.
+// The shared mutation lock protects the generation compare-and-swap and final
+// publication, but is never held while a driver performs network I/O.
+func (coordinator *Coordinator) commitProvider(id provider.ID, next provider.Snapshot, operation state.Operation) error {
+	coordinator.mutations.Lock()
+	defer coordinator.mutations.Unlock()
+	complete, err := coordinator.manager.Begin(operation)
 	if err != nil {
 		return err
 	}
 	outcome := state.OutcomeFailed
 	defer func() { complete(outcome) }()
-	type result struct {
-		id       provider.ID
-		snapshot provider.Snapshot
-		err      error
-	}
-	child, cancel := context.WithCancel(ctx)
-	defer cancel()
-	results := make(chan result, len(ids))
-	for _, providerID := range ids {
-		driver, driverErr := coordinator.providers.Driver(providerID)
-		if driverErr != nil {
-			return driverErr
-		}
-		previous := current.Providers[providerID].Clone()
-		go func() {
-			next, refreshErr := driver.Refresh(child, previous)
-			if refreshErr != nil {
-				cancel()
-			}
-			results <- result{id: providerID, snapshot: next, err: refreshErr}
-		}()
-	}
-	providers := cloneProviders(current.Providers)
-	for range ids {
-		result := <-results
-		if result.err != nil {
-			return result.err
-		}
-		if err := provider.ValidateSnapshot(result.snapshot, result.id, coordinator.now()); err != nil {
-			return err
-		}
-		providers[result.id] = result.snapshot.Clone()
-	}
+	providers := coordinator.currentProviders()
+	providers[id] = next.Clone()
 	if err := coordinator.publish(providers); err != nil {
 		return err
 	}
@@ -139,17 +167,18 @@ func (coordinator *Coordinator) Refresh(ctx context.Context, id provider.ID) err
 	return nil
 }
 
-// Logout removes only the selected provider account. Other providers and their
-// nodes remain active and are rebound atomically.
+// Logout is the only operation that removes a provider's stored session.
 func (coordinator *Coordinator) Logout(_ context.Context, id provider.ID) error {
-	if !id.Valid() {
+	lock, available := coordinator.locks[id]
+	if !available {
 		return provider.ErrUnknownProvider
 	}
-	current := coordinator.manager.Current()
-	if current == nil {
-		return provider.ErrNoSession
-	}
-	if _, available := current.Providers[id]; !available {
+	lock.Lock()
+	defer lock.Unlock()
+	coordinator.mutations.Lock()
+	defer coordinator.mutations.Unlock()
+	providers := coordinator.currentProviders()
+	if _, available := providers[id]; !available {
 		return provider.ErrNoSession
 	}
 	complete, err := coordinator.manager.Begin(state.OperationRefresh)
@@ -158,58 +187,17 @@ func (coordinator *Coordinator) Logout(_ context.Context, id provider.ID) error 
 	}
 	outcome := state.OutcomeFailed
 	defer func() { complete(outcome) }()
-	providers := cloneProviders(current.Providers)
 	delete(providers, id)
-	pruneUnusableProviders(providers, coordinator.now())
 	if len(providers) == 0 {
 		if err := coordinator.commit(nil); err != nil {
 			return err
 		}
 		coordinator.manager.SignOut()
-		outcome = state.OutcomeSucceeded
-		return nil
-	}
-	if err := coordinator.publish(providers); err != nil {
+	} else if err := coordinator.publish(providers); err != nil {
 		return err
 	}
 	outcome = state.OutcomeSucceeded
 	return nil
-}
-
-// Expire removes expired providers while preserving every still-usable account.
-func (coordinator *Coordinator) Expire(now time.Time) (bool, error) {
-	current := coordinator.manager.Current()
-	if current == nil || len(current.Providers) == 0 {
-		return false, nil
-	}
-	providers := cloneProviders(current.Providers)
-	changed := false
-	for id, snapshot := range providers {
-		if !snapshot.UsableAt(now) {
-			delete(providers, id)
-			changed = true
-		}
-	}
-	if !changed {
-		return false, nil
-	}
-	if len(providers) == 0 {
-		if err := coordinator.commit(nil); err != nil {
-			return false, err
-		}
-		return true, coordinator.manager.MarkExpired(now)
-	}
-	complete, err := coordinator.manager.Begin(state.OperationRefresh)
-	if err != nil {
-		return false, err
-	}
-	outcome := state.OutcomeFailed
-	defer func() { complete(outcome) }()
-	if err := coordinator.publish(providers); err != nil {
-		return false, err
-	}
-	outcome = state.OutcomeSucceeded
-	return true, nil
 }
 
 func refreshIDs(providers map[provider.ID]provider.Snapshot, requested provider.ID) ([]provider.ID, error) {
@@ -232,28 +220,29 @@ func refreshIDs(providers map[provider.ID]provider.Snapshot, requested provider.
 
 func (coordinator *Coordinator) publish(providers map[provider.ID]provider.Snapshot) error {
 	now := coordinator.now().UTC()
-	pruneUnusableProviders(providers, now)
 	if len(providers) == 0 {
 		return provider.ErrNoSession
 	}
 	current := coordinator.manager.Current()
 	generation := uint64(1)
-	var previous map[string]state.NodeRef
 	if current != nil {
 		generation = current.Generation + 1
-		previous = current.Selectors
 	}
 	nodes, err := runtimeNodes(providers)
 	if err != nil {
 		return err
 	}
-	builtNodes, selectors, err := coordinator.buildSelectors(generation, nodes, previous)
+	builtNodes, selectors, err := coordinator.buildSelectors(nodes)
 	if err != nil {
 		return fmt.Errorf("provider coordinator: build selectors: %w", err)
 	}
 	snapshot := &state.RuntimeSnapshot{
 		Generation: generation, CreatedAt: now, ExpiresAt: state.ProviderExpiresAt(providers),
 		Providers: cloneProviders(providers), Nodes: builtNodes, Selectors: selectors,
+	}
+	latest := coordinator.manager.Current()
+	if (current == nil) != (latest == nil) || current != nil && current.Generation != latest.Generation {
+		return fmt.Errorf("%w: generation changed before provider commit", state.ErrInvalidSnapshot)
 	}
 	return coordinator.commit(snapshot)
 }
@@ -302,14 +291,6 @@ func cloneProviders(source map[provider.ID]provider.Snapshot) map[provider.ID]pr
 	return clone
 }
 
-func pruneUnusableProviders(providers map[provider.ID]provider.Snapshot, now time.Time) {
-	for id, snapshot := range providers {
-		if !snapshot.UsableAt(now) {
-			delete(providers, id)
-		}
-	}
-}
-
 func (coordinator *Coordinator) currentProviders() map[provider.ID]provider.Snapshot {
 	current := coordinator.manager.Current()
 	if current == nil {
@@ -318,7 +299,7 @@ func (coordinator *Coordinator) currentProviders() map[provider.ID]provider.Snap
 	return cloneProviders(current.Providers)
 }
 
-func (coordinator *Coordinator) buildSelectors(_ uint64, nodes []state.Node, _ map[string]state.NodeRef) ([]state.Node, map[string]state.NodeRef, error) {
+func (coordinator *Coordinator) buildSelectors(nodes []state.Node) ([]state.Node, map[string]state.NodeRef, error) {
 	selectors, err := coordinator.builder.Build(nodes)
 	if err != nil {
 		return nil, nil, err

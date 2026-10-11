@@ -150,6 +150,9 @@ type Account struct {
 	Tier               string     `json:"tier"`
 	SubscriptionActive bool       `json:"subscriptionActive"`
 	SubscriptionEndsAt *time.Time `json:"subscriptionEndsAt,omitempty"`
+	RefreshStatus      string     `json:"refreshStatus,omitempty"`
+	LastRefreshAt      time.Time  `json:"lastRefreshAt,omitzero"`
+	NextRefreshAt      time.Time  `json:"nextRefreshAt,omitzero"`
 }
 
 // LoginInput carries provider credentials transiently to the runtime.
