@@ -70,17 +70,18 @@ func (s *Supervisor) Run(parent context.Context) error {
 	case <-parent.Done():
 		cause = parent.Err()
 	case result := <-results:
-		if result.err == nil {
+		switch {
+		case result.err == nil:
 			cause = fmt.Errorf("critical worker %s stopped unexpectedly", result.name)
-		} else if parent.Err() == nil {
+		case parent.Err() == nil:
 			cause = fmt.Errorf("critical worker %s failed: %w", result.name, result.err)
-		} else {
+		default:
 			cause = parent.Err()
 		}
 	}
 	cancel()
 
-	drainCtx, drainCancel := context.WithTimeout(context.Background(), s.drainTimeout)
+	drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(parent), s.drainTimeout)
 	defer drainCancel()
 	var shutdown sync.WaitGroup
 	for index := len(s.workers) - 1; index >= 0; index-- {

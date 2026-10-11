@@ -49,7 +49,7 @@ func NewEncrypter(key []byte, iv []byte) (cipher.Stream, error) {
 	if len(iv) != IVSize {
 		return nil, ErrInvalidIV
 	}
-	return cipher.NewCFBEncrypter(block, iv), nil
+	return cipher.NewCFBEncrypter(block, iv), nil //nolint:staticcheck // AES-256-CFB is mandated by the WIFIIN wire format, not a design choice.
 }
 
 // NewDecrypter returns a fresh AES-256-CFB decryption context. A context is
@@ -62,7 +62,7 @@ func NewDecrypter(key []byte, iv []byte) (cipher.Stream, error) {
 	if len(iv) != IVSize {
 		return nil, ErrInvalidIV
 	}
-	return cipher.NewCFBDecrypter(block, iv), nil
+	return cipher.NewCFBDecrypter(block, iv), nil //nolint:staticcheck // AES-256-CFB is mandated by the WIFIIN wire format, not a design choice.
 }
 
 func newBlock(key []byte) (cipher.Block, error) {

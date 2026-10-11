@@ -399,11 +399,12 @@ func (m *Manager) finish(lease uint64, operation Operation, outcome Outcome) {
 		m.signOutLocked()
 		return
 	}
-	if SessionUsable(current, time.Now()) {
+	switch {
+	case SessionUsable(current, time.Now()):
 		m.state = StateDegraded
-	} else if current != nil && !current.ExpiresAt.IsZero() && !time.Now().Before(current.ExpiresAt) {
+	case current != nil && !current.ExpiresAt.IsZero() && !time.Now().Before(current.ExpiresAt):
 		m.expireLocked(time.Now())
-	} else {
+	default:
 		m.state = StateError
 	}
 }

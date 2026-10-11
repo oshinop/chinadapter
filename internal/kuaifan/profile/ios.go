@@ -108,7 +108,7 @@ func validIOSDeviceID(deviceID string) bool {
 		return false
 	}
 	for _, value := range deviceID {
-		if !(value >= '0' && value <= '9' || value >= 'a' && value <= 'f') {
+		if (value < '0' || value > '9') && (value < 'a' || value > 'f') {
 			return false
 		}
 	}

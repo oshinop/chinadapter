@@ -161,7 +161,7 @@ func ValidateSQLiteFile(path string, semantic ...func(PersistentState) error) er
 	if err != nil {
 		return corruptDatabase(err)
 	}
-	defer db.Close()
+	defer func() { _ = db.Close() }()
 	if err := configureSQLiteReadOnly(db); err != nil {
 		return corruptDatabase(err)
 	}
@@ -1134,14 +1134,13 @@ func loadPersistentStateTx(tx *sql.Tx) (PersistentState, error) {
 	if err != nil {
 		return PersistentState{}, corruptDatabase(err)
 	}
+	defer excludedRows.Close()
 	for excludedRows.Next() {
 		var nodeID string
 		if err := excludedRows.Scan(&nodeID); err != nil {
-			excludedRows.Close()
 			return PersistentState{}, corruptDatabase(err)
 		}
 		if _, duplicate := state.Preferences.ExcludedNodeIDs[nodeID]; duplicate {
-			excludedRows.Close()
 			return PersistentState{}, corruptDatabase(errors.New("duplicate excluded node id"))
 		}
 		state.Preferences.ExcludedNodeIDs[nodeID] = true
@@ -1222,23 +1221,21 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 	if err != nil {
 		return nil, corruptDatabase(err)
 	}
+	defer providerRows.Close()
 	for providerRows.Next() {
 		var rawID, userID, display, tier string
 		var providerExpires, activeValue int64
 		var subscriptionEnds sql.NullInt64
 		var refreshState []byte
 		if err := providerRows.Scan(&rawID, &providerExpires, &userID, &display, &tier, &activeValue, &subscriptionEnds, &refreshState); err != nil {
-			providerRows.Close()
 			return nil, corruptDatabase(err)
 		}
 		active, err := intBool(activeValue)
 		if err != nil {
-			providerRows.Close()
 			return nil, corruptDatabase(err)
 		}
 		id := provider.ID(rawID)
 		if _, duplicate := snapshot.Providers[id]; duplicate {
-			providerRows.Close()
 			return nil, corruptDatabase(errors.New("duplicate provider session"))
 		}
 		snapshot.Providers[id] = provider.Snapshot{
@@ -1257,21 +1254,19 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 	if err != nil {
 		return nil, corruptDatabase(err)
 	}
+	defer authorityRows.Close()
 	for authorityRows.Next() {
 		var rawID, authorityID, rawProtocol string
 		var authorityData []byte
 		if err := authorityRows.Scan(&rawID, &authorityID, &rawProtocol, &authorityData); err != nil {
-			authorityRows.Close()
 			return nil, corruptDatabase(err)
 		}
 		id := provider.ID(rawID)
 		providerSnapshot, available := snapshot.Providers[id]
 		if !available {
-			authorityRows.Close()
 			return nil, corruptDatabase(errors.New("authority references absent provider"))
 		}
 		if _, duplicate := providerSnapshot.Authorities[authorityID]; duplicate {
-			authorityRows.Close()
 			return nil, corruptDatabase(errors.New("duplicate provider authority"))
 		}
 		providerSnapshot.Authorities[authorityID] = provider.Authority{Protocol: provider.Protocol(rawProtocol), Data: append([]byte(nil), authorityData...)}
@@ -1287,6 +1282,7 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 	if err != nil {
 		return nil, corruptDatabase(err)
 	}
+	defer nodeRows.Close()
 	for nodeRows.Next() {
 		var node Node
 		var rawProvider, rawProtocol string
@@ -1294,24 +1290,19 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 		var probed sql.NullInt64
 		var health, udp string
 		if err := nodeRows.Scan(&node.ID, &node.Selector, &rawProvider, &rawProtocol, &node.AuthorityID, &node.Host, &port, &node.Name, &node.Group, &node.Model, &node.Weight, &auto, &eligible, &excluded, &health, &udp, &rtt, &probed); err != nil {
-			nodeRows.Close()
 			return nil, corruptDatabase(err)
 		}
 		if port < 0 || port > 65535 {
-			nodeRows.Close()
 			return nil, corruptDatabase(errors.New("invalid active node port"))
 		}
 		var conversionErr error
 		if node.Auto, conversionErr = intBool(auto); conversionErr != nil {
-			nodeRows.Close()
 			return nil, corruptDatabase(conversionErr)
 		}
 		if node.Eligible, conversionErr = intBool(eligible); conversionErr != nil {
-			nodeRows.Close()
 			return nil, corruptDatabase(conversionErr)
 		}
 		if node.Excluded, conversionErr = intBool(excluded); conversionErr != nil {
-			nodeRows.Close()
 			return nil, corruptDatabase(conversionErr)
 		}
 		node.Provider, node.Protocol = provider.ID(rawProvider), provider.Protocol(rawProtocol)
@@ -1319,7 +1310,6 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 		snapshot.Nodes = append(snapshot.Nodes, node)
 		providerSnapshot, available := snapshot.Providers[node.Provider]
 		if !available {
-			nodeRows.Close()
 			return nil, corruptDatabase(errors.New("node references absent provider"))
 		}
 		providerSnapshot.Nodes = append(providerSnapshot.Nodes, provider.Node{
@@ -1339,15 +1329,14 @@ func loadActiveSessionTx(tx *sql.Tx) (*RuntimeSnapshot, error) {
 	if err != nil {
 		return nil, corruptDatabase(err)
 	}
+	defer selectorRows.Close()
 	for selectorRows.Next() {
 		var selector string
 		var reference NodeRef
 		if err := selectorRows.Scan(&selector, &reference.NodeID); err != nil {
-			selectorRows.Close()
 			return nil, corruptDatabase(err)
 		}
 		if _, duplicate := snapshot.Selectors[selector]; duplicate {
-			selectorRows.Close()
 			return nil, corruptDatabase(errors.New("duplicate active selector"))
 		}
 		snapshot.Selectors[selector] = reference
@@ -1388,20 +1377,18 @@ func (s *SQLiteStore) RestoreBrowserSessions(now time.Time, max int, add func(to
 	if err != nil {
 		return corruptDatabase(err)
 	}
+	defer rows.Close()
 	for rows.Next() {
 		var token, csrf string
 		var expires int64
 		if err := rows.Scan(&token, &csrf, &expires); err != nil {
-			rows.Close()
 			return corruptDatabase(err)
 		}
 		expiresAt := time.Unix(0, expires).UTC()
 		if !validBrowserSession(token, csrf, expiresAt, now) {
-			rows.Close()
 			return corruptDatabase(errors.New("malformed browser session"))
 		}
 		if err := add(token, csrf, expiresAt); err != nil {
-			rows.Close()
 			return err
 		}
 	}
@@ -1484,7 +1471,7 @@ func (s *SQLiteStore) DeleteBrowserSession(token string) error {
 	return tx.Commit()
 }
 
-func validateBrowserSessionsTx(tx *sql.Tx, now time.Time, max int, prune bool) error {
+func validateBrowserSessionsTx(tx *sql.Tx, now time.Time, max int, prune bool) error { //nolint:unparam // max is maxBrowserSessions at every call site; store rewrite in P2.
 	if prune {
 		if err := pruneBrowserSessionsTx(tx, now, max); err != nil {
 			return err
@@ -1494,24 +1481,22 @@ func validateBrowserSessionsTx(tx *sql.Tx, now time.Time, max int, prune bool) e
 	if err != nil {
 		return corruptDatabase(err)
 	}
+	defer rows.Close()
 	count := 0
 	for rows.Next() {
 		var token, csrf string
 		var expires int64
 		if err := rows.Scan(&token, &csrf, &expires); err != nil {
-			rows.Close()
 			return corruptDatabase(err)
 		}
 		expiresAt := time.Unix(0, expires).UTC()
 		if !expiresAt.After(now) {
 			if prune {
-				rows.Close()
 				return corruptDatabase(errors.New("expired browser session remained after prune"))
 			}
 			continue
 		}
 		if !validBrowserSession(token, csrf, expiresAt, now) {
-			rows.Close()
 			return corruptDatabase(errors.New("malformed browser session"))
 		}
 		count++
@@ -1539,12 +1524,12 @@ func pruneBrowserSessionsTx(tx *sql.Tx, now time.Time, max int) error {
 	if err != nil {
 		return corruptDatabase(err)
 	}
+	defer rows.Close()
 	var excess []string
 	count := 0
 	for rows.Next() {
 		var token string
 		if err := rows.Scan(&token); err != nil {
-			rows.Close()
 			return corruptDatabase(err)
 		}
 		count++
@@ -1625,7 +1610,7 @@ func corruptDatabase(err error) error {
 	if err == nil || errors.Is(err, ErrCorruptState) {
 		return err
 	}
-	return fmt.Errorf("%w: %v", ErrCorruptState, err)
+	return fmt.Errorf("%w: %w", ErrCorruptState, err)
 }
 
 func syncStateFile(path string) error {
@@ -1633,7 +1618,7 @@ func syncStateFile(path string) error {
 	if err != nil {
 		return err
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync state database: %w", err)
 	}
@@ -1645,7 +1630,7 @@ func syncDirectory(dir string) error {
 	if err != nil {
 		return fmt.Errorf("open state directory for sync: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 	if err := file.Sync(); err != nil {
 		return fmt.Errorf("sync state directory: %w", err)
 	}

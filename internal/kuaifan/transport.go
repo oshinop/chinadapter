@@ -213,7 +213,7 @@ func (connection *cipherConn) CloseWrite() error {
 	if closer, ok := connection.Conn.(interface{ CloseWrite() error }); ok {
 		return closer.CloseWrite()
 	}
-	return connection.Conn.Close()
+	return connection.Close()
 }
 
 type outboundCFBWriter struct {

@@ -423,8 +423,8 @@ func (d *adapter) shutdownSOCKS(ctx context.Context) error {
 
 func (d *adapter) runWeb(ctx context.Context) error {
 	err := d.httpServer.Serve(d.httpListener)
-	if errors.Is(err, http.ErrServerClosed) || ctx.Err() != nil {
-		return nil
+	if ctx.Err() != nil {
+		return ctx.Err()
 	}
 	return err
 }

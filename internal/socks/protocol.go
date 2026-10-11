@@ -52,14 +52,14 @@ type target struct {
 func negotiate(r io.Reader, w io.Writer) error {
 	var header [2]byte
 	if _, err := io.ReadFull(r, header[:]); err != nil {
-		return fmt.Errorf("%w: %v", errBadGreeting, err)
+		return fmt.Errorf("%w: %w", errBadGreeting, err)
 	}
 	if header[0] != version5 || header[1] == 0 {
 		return errBadGreeting
 	}
 	methods := make([]byte, int(header[1]))
 	if _, err := io.ReadFull(r, methods); err != nil {
-		return fmt.Errorf("%w: %v", errBadGreeting, err)
+		return fmt.Errorf("%w: %w", errBadGreeting, err)
 	}
 	for _, method := range methods {
 		if method == methodUserPassword {
@@ -75,25 +75,25 @@ func negotiate(r io.Reader, w io.Writer) error {
 func readUserPassword(r io.Reader) (username, password string, err error) {
 	var versionAndLength [2]byte
 	if _, err = io.ReadFull(r, versionAndLength[:]); err != nil {
-		return "", "", fmt.Errorf("%w: %v", errBadAuth, err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuth, err)
 	}
 	if versionAndLength[0] != version1929 || versionAndLength[1] == 0 {
 		return "", "", errBadAuth
 	}
 	usernameBytes := make([]byte, int(versionAndLength[1]))
 	if _, err = io.ReadFull(r, usernameBytes); err != nil {
-		return "", "", fmt.Errorf("%w: %v", errBadAuth, err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuth, err)
 	}
 	var passwordLength [1]byte
 	if _, err = io.ReadFull(r, passwordLength[:]); err != nil {
-		return "", "", fmt.Errorf("%w: %v", errBadAuth, err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuth, err)
 	}
 	if passwordLength[0] == 0 {
 		return "", "", errBadAuth
 	}
 	passwordBytes := make([]byte, int(passwordLength[0]))
 	if _, err = io.ReadFull(r, passwordBytes); err != nil {
-		return "", "", fmt.Errorf("%w: %v", errBadAuth, err)
+		return "", "", fmt.Errorf("%w: %w", errBadAuth, err)
 	}
 	return string(usernameBytes), string(passwordBytes), nil
 }
@@ -109,7 +109,7 @@ func writeAuthStatus(w io.Writer, success bool) error {
 func readRequest(r io.Reader) (command byte, destination target, err error) {
 	var header [4]byte
 	if _, err = io.ReadFull(r, header[:]); err != nil {
-		return 0, target{}, fmt.Errorf("%w: %v", errBadRequest, err)
+		return 0, target{}, fmt.Errorf("%w: %w", errBadRequest, err)
 	}
 	if header[0] != version5 || header[2] != 0 {
 		return 0, target{}, errBadRequest
@@ -125,26 +125,26 @@ func readTargetAddress(r io.Reader, atyp byte) (string, uint16, error) {
 	case addressIPv4:
 		var raw [4]byte
 		if _, err := io.ReadFull(r, raw[:]); err != nil {
-			return "", 0, fmt.Errorf("%w: %v", errBadAddress, err)
+			return "", 0, fmt.Errorf("%w: %w", errBadAddress, err)
 		}
 		host = netip.AddrFrom4(raw).String()
 	case addressIPv6:
 		var raw [16]byte
 		if _, err := io.ReadFull(r, raw[:]); err != nil {
-			return "", 0, fmt.Errorf("%w: %v", errBadAddress, err)
+			return "", 0, fmt.Errorf("%w: %w", errBadAddress, err)
 		}
 		host = netip.AddrFrom16(raw).String()
 	case addressDomain:
 		var n [1]byte
 		if _, err := io.ReadFull(r, n[:]); err != nil {
-			return "", 0, fmt.Errorf("%w: %v", errBadAddress, err)
+			return "", 0, fmt.Errorf("%w: %w", errBadAddress, err)
 		}
 		if n[0] == 0 {
 			return "", 0, errBadAddress
 		}
 		name := make([]byte, int(n[0]))
 		if _, err := io.ReadFull(r, name); err != nil {
-			return "", 0, fmt.Errorf("%w: %v", errBadAddress, err)
+			return "", 0, fmt.Errorf("%w: %w", errBadAddress, err)
 		}
 		for _, b := range name {
 			if b < 0x21 || b > 0x7e {
@@ -157,7 +157,7 @@ func readTargetAddress(r io.Reader, atyp byte) (string, uint16, error) {
 	}
 	var portBytes [2]byte
 	if _, err := io.ReadFull(r, portBytes[:]); err != nil {
-		return "", 0, fmt.Errorf("%w: %v", errBadAddress, err)
+		return "", 0, fmt.Errorf("%w: %w", errBadAddress, err)
 	}
 	port := binary.BigEndian.Uint16(portBytes[:])
 	return host, port, nil

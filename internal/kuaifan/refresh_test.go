@@ -345,7 +345,8 @@ func TestRetryRetriesTemporaryTransportFailures(t *testing.T) {
 		calls++
 		return struct{}{}, temporaryTransportError{}
 	})
-	if _, ok := err.(temporaryTransportError); !ok || calls != 3 {
+	var typed temporaryTransportError
+	if !errors.As(err, &typed) || calls != 3 {
 		t.Fatalf("temporary retry = %v after %d calls", err, calls)
 	}
 }

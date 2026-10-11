@@ -261,19 +261,17 @@ func (r *HandshakeReader) fill() error {
 		return err
 	}
 	var buf [32 * 1024]byte
-	for {
-		n, err := r.r.Read(buf[:])
-		if n > 0 {
-			r.pending = append(r.pending, buf[:n]...)
-			if err != nil {
-				r.readErr = err
-			}
-			return nil
-		}
+	n, err := r.r.Read(buf[:])
+	if n > 0 {
+		r.pending = append(r.pending, buf[:n]...)
 		if err != nil {
-			return err
+			r.readErr = err
 		}
-		// io.Reader is prohibited from indefinitely returning (0, nil).
-		return io.ErrNoProgress
+		return nil
 	}
+	if err != nil {
+		return err
+	}
+	// io.Reader is prohibited from indefinitely returning (0, nil).
+	return io.ErrNoProgress
 }

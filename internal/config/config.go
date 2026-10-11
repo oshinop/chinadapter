@@ -93,7 +93,7 @@ func Load(path string) (Config, error) {
 	if err != nil {
 		return Config{}, fmt.Errorf("open configuration: %w", err)
 	}
-	defer file.Close()
+	defer func() { _ = file.Close() }()
 
 	decoder := yaml.NewDecoder(io.LimitReader(file, maxConfigBytes+1))
 	decoder.KnownFields(true)
@@ -102,7 +102,7 @@ func Load(path string) (Config, error) {
 		return Config{}, fmt.Errorf("decode configuration: %w", err)
 	}
 	var trailing any
-	if err := decoder.Decode(&trailing); err != io.EOF {
+	if err := decoder.Decode(&trailing); !errors.Is(err, io.EOF) {
 		if err == nil {
 			return Config{}, errors.New("configuration contains multiple YAML documents")
 		}

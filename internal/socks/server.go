@@ -229,7 +229,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		}
 		select {
 		case s.slots <- struct{}{}:
-			handlerCtx, cancel := context.WithCancel(context.Background())
+			handlerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
 			if !s.addActiveHandler(connection, cancel) {
 				cancel()
 				_ = connection.Close()
@@ -365,7 +365,7 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 			_ = writeReply(client, code, target{})
 			return err
 		}
-		defer association.Close()
+		defer func() { _ = association.Close() }()
 	}
 	admit := func() bool {
 		now := time.Now()

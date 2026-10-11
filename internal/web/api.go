@@ -485,6 +485,8 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		retryAfterHeader(w.Header(), retry)
 		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests", "")
 		return
+	case accessAdmitted:
+		// Admitted requests continue below.
 	}
 	successful, countedFailure := false, false
 	defer func() { a.sessions.finishAccess(client, successful, countedFailure) }()
@@ -617,6 +619,8 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 	case loginSessionInactive:
 		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
 		return
+	case loginAdmitted:
+		// Admitted requests continue below.
 	}
 	successful, countedFailure := false, false
 	defer func() { a.sessions.finishLogin(token, successful, countedFailure) }()
@@ -772,7 +776,7 @@ func (a *API) writeSSE(w http.ResponseWriter, flusher http.Flusher, payload stri
 	if err := controller.SetWriteDeadline(time.Now().Add(a.config.WriteTimeout)); err != nil && !errors.Is(err, http.ErrNotSupported) {
 		return false
 	}
-	defer controller.SetWriteDeadline(time.Time{})
+	defer func() { _ = controller.SetWriteDeadline(time.Time{}) }()
 	if _, err := io.WriteString(w, payload); err != nil {
 		return false
 	}
@@ -879,7 +883,7 @@ func (a *API) writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (a *API) writeProblem(w http.ResponseWriter, status int, code, title, detail string) {
+func (a *API) writeProblem(w http.ResponseWriter, status int, code, title, detail string) { //nolint:unparam // detail is always empty today; problem+json rework in P3 drops it.
 	w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(struct {

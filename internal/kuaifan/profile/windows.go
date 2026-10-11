@@ -125,7 +125,7 @@ func validWindowsMAC(mac string) bool {
 		return false
 	}
 	for _, value := range mac {
-		if !(value >= '0' && value <= '9' || value >= 'A' && value <= 'F') {
+		if (value < '0' || value > '9') && (value < 'A' || value > 'F') {
 			return false
 		}
 	}

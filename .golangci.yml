@@ -1,0 +1,58 @@
+version: "2"
+
+run:
+  timeout: 5m
+
+issues:
+  max-issues-per-linter: 0
+  max-same-issues: 0
+
+linters:
+  default: none
+  enable:
+    - bodyclose
+    - contextcheck
+    - errcheck
+    - errorlint
+    - exhaustive
+    - gocritic
+    - govet
+    - ineffassign
+    - misspell
+    - nilerr
+    - rowserrcheck
+    - sqlclosecheck
+    - staticcheck
+    - unparam
+    - unused
+    - usestdlibvars
+  settings:
+    errcheck:
+      # Cleanup-only closes where no caller can act on the error: deferred
+      # connection/body teardown, rollback after commit, and read-side rows.
+      exclude-functions:
+        - fmt.Fprint
+        - fmt.Fprintf
+        - fmt.Fprintln
+        - (*database/sql.Tx).Rollback
+        - (*database/sql.Rows).Close
+        - (net.Conn).Close
+        - (io.ReadCloser).Close
+    exhaustive:
+      default-signifies-exhaustive: true
+  exclusions:
+    generated: lax
+    presets:
+      - comments
+      - common-false-positives
+    rules:
+      - path: _test\.go
+        linters:
+          - errcheck
+          - unparam
+          - gocritic
+          - bodyclose
+
+formatters:
+  enable:
+    - gofmt

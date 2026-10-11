@@ -989,17 +989,6 @@ func (r *Runtime) scheduleRefreshRetry() {
 	r.mu.Unlock()
 }
 
-func (r *Runtime) clearActiveSession() error {
-	if r == nil {
-		return errors.New("app: runtime unavailable")
-	}
-	_, err := r.store.Update(func(candidate *state.PersistentState) error {
-		candidate.ActiveSession = nil
-		return nil
-	})
-	return err
-}
-
 func (r *Runtime) publishState() {
 	if r == nil {
 		return

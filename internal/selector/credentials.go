@@ -86,11 +86,11 @@ func canonicalHost(host string) (string, error) {
 	if address, err := netip.ParseAddr(host); err == nil {
 		return address.String(), nil
 	}
-	ascii, err := lookupIDNA.ToASCII(strings.ToLower(host))
+	ascii, err := lookupIDNA.ToASCII(strings.TrimSuffix(strings.ToLower(host), "."))
 	if err != nil {
-		return "", fmt.Errorf("%w: IDNA host: %v", ErrInvalidIdentity, err)
+		return "", fmt.Errorf("%w: IDNA host: %w", ErrInvalidIdentity, err)
 	}
-	ascii = strings.TrimSuffix(strings.ToLower(ascii), ".")
+	ascii = strings.ToLower(ascii)
 	if ascii == "" || strings.ContainsAny(ascii, "\x00/\\@") {
 		return "", fmt.Errorf("%w: invalid DNS host", ErrInvalidIdentity)
 	}

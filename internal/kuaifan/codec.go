@@ -143,7 +143,7 @@ func (c Codec) DecodeJSON(body []byte, out any) error {
 		if err == nil {
 			return ErrTrailingJSON
 		}
-		return fmt.Errorf("%w: %v", ErrTrailingJSON, err)
+		return fmt.Errorf("%w: %w", ErrTrailingJSON, err)
 	}
 	return nil
 }
