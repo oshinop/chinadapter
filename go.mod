@@ -2,6 +2,8 @@ module github.com/kfadapter/kfadapter
 
 go 1.26.0
 
+toolchain go1.26.5
+
 require (
 	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.55.0

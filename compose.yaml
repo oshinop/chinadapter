@@ -2,7 +2,7 @@ name: kfadapter
 
 services:
   kfadapter:
-    image: ghcr.io/oshinop/kfadapter:latest
+    image: ${KFADAPTER_IMAGE_REPOSITORY:-ghcr.io/oshinop/kfadapter}@${KFADAPTER_IMAGE_DIGEST:?set KFADAPTER_IMAGE_DIGEST to sha256:<64-hex>}
     network_mode: host
     user: "65532:65532"
     working_dir: /kfadapter

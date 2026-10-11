@@ -1,6 +1,7 @@
 # Exclude local, generated, and sensitive files from the build context.
 .git/
 .github/
+.omp/
 .env
 .env.*
 *.env
