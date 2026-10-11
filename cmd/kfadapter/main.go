@@ -7,6 +7,7 @@ import (
 	"flag"
 	"fmt"
 	"io"
+	"log/slog"
 	"net"
 	"net/http"
 	"net/netip"
@@ -47,10 +48,12 @@ func main() {
 }
 
 func run(arguments []string, stdout, stderr io.Writer) int {
+	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, nil)))
 	if len(arguments) == 0 || arguments[0] == "serve" || strings.HasPrefix(arguments[0], "-") {
 		if err := serve(commandArgs(arguments)); err != nil {
-			// Never render underlying control/state errors: they could retain
-			// endpoint or upstream service context in a future implementation.
+			// Startup and supervisor errors are operator-facing and carry no
+			// provider text; refresh failures are logged by class only.
+			slog.Error("service stopped", "err", err)
 			fmt.Fprintln(stderr, "kfadapter: service stopped")
 			return 1
 		}
@@ -68,6 +71,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		return 0
 	case "validate-config":
 		if err := validateConfig(arguments[1:]); err != nil {
+			slog.Error("invalid configuration", "err", err)
 			fmt.Fprintln(stderr, "kfadapter: invalid configuration")
 			return 1
 		}
@@ -414,7 +418,11 @@ func (d *adapter) runContext(ctx context.Context) (result error) {
 }
 
 func (d *adapter) runSOCKS(ctx context.Context) error {
-	return d.socksServer.Serve(ctx, d.socksListener)
+	err := d.socksServer.Serve(ctx, d.socksListener)
+	if err == nil && ctx.Err() != nil {
+		return ctx.Err()
+	}
+	return err
 }
 
 func (d *adapter) shutdownSOCKS(ctx context.Context) error {
@@ -442,8 +450,11 @@ func (d *adapter) runHeartbeat(ctx context.Context) error {
 			return ctx.Err()
 		case now := <-expiryTicker.C:
 			// Refresh failures are normal degraded-control-plane events; they
-			// must not stop an otherwise healthy local adapter.
-			_ = d.runtime.Heartbeat(ctx, d.runtime.RefreshDue(now))
+			// must not stop an otherwise healthy local adapter. Only the error
+			// class is logged so provider text never reaches the log.
+			if err := d.runtime.Heartbeat(ctx, d.runtime.RefreshDue(now)); err != nil {
+				slog.Warn("provider refresh failed", "class", refreshErrorClass(err))
+			}
 		}
 	}
 }
@@ -454,4 +465,17 @@ func (d *adapter) watchdog(context.Context) error {
 	}
 	_, err := d.store.Load()
 	return err
+}
+
+// refreshErrorClass names a refresh failure category without rendering the
+// underlying provider error, which may echo control-plane text.
+func refreshErrorClass(err error) string {
+	switch {
+	case errors.Is(err, provider.ErrLoginRejected):
+		return "login_rejected"
+	case errors.Is(err, provider.ErrNoSession):
+		return "no_session"
+	default:
+		return "unclassified"
+	}
 }

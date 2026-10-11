@@ -296,8 +296,12 @@ func (s *sessionStore) finishAccess(client string, successful, countedFailure bo
 		return
 	}
 	attempt.inFlight = false
-	if successful || !countedFailure {
+	if successful {
 		delete(s.accessAttempts, client)
+		return
+	}
+	if !countedFailure {
+		s.accessAttempts[client] = attempt
 		return
 	}
 	now := s.now()

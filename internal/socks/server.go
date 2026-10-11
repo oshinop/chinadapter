@@ -219,14 +219,27 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	}()
 	defer close(stop)
 
+	var retryDelay time.Duration
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
 			if ctx.Err() != nil || !s.accepting(listener) {
 				return nil
 			}
-			return err
+			if !temporaryAcceptError(err) {
+				return err
+			}
+			retryDelay = nextAcceptRetry(retryDelay)
+			timer := time.NewTimer(retryDelay)
+			select {
+			case <-ctx.Done():
+				timer.Stop()
+				return nil
+			case <-timer.C:
+			}
+			continue
 		}
+		retryDelay = 0
 		select {
 		case s.slots <- struct{}{}:
 			handlerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -245,6 +258,30 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 		default:
 			_ = connection.Close()
 		}
+	}
+}
+
+// temporaryAcceptError reports accept failures caused by transient resource
+// pressure, such as descriptor exhaustion, rather than a closed listener.
+func temporaryAcceptError(err error) bool {
+	if errors.Is(err, syscall.EMFILE) || errors.Is(err, syscall.ENFILE) ||
+		errors.Is(err, syscall.ECONNABORTED) || errors.Is(err, syscall.ECONNRESET) ||
+		errors.Is(err, syscall.EAGAIN) || errors.Is(err, syscall.EINTR) {
+		return true
+	}
+	var netErr net.Error
+	return errors.As(err, &netErr) && netErr.Timeout()
+}
+
+// nextAcceptRetry doubles the accept backoff from 5ms, capped at one second.
+func nextAcceptRetry(previous time.Duration) time.Duration {
+	switch {
+	case previous == 0:
+		return 5 * time.Millisecond
+	case previous >= time.Second/2:
+		return time.Second
+	default:
+		return previous * 2
 	}
 }
 

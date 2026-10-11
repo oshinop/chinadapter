@@ -111,6 +111,9 @@ func openWIFIIN(ctx context.Context, dial provider.DialContextFunc, nodeHost str
 	upstream, err := dial(dialCtx, "tcp", net.JoinHostPort(nodeHost, strconv.Itoa(int(nodePort))))
 	cancel()
 	if ctx.Err() != nil {
+		if err == nil {
+			_ = upstream.Close()
+		}
 		return nil, nil, nil, nil, ctx.Err()
 	}
 	if err != nil {

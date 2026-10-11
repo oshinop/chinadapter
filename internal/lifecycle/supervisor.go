@@ -71,12 +71,12 @@ func (s *Supervisor) Run(parent context.Context) error {
 		cause = parent.Err()
 	case result := <-results:
 		switch {
+		case parent.Err() != nil:
+			cause = parent.Err()
 		case result.err == nil:
 			cause = fmt.Errorf("critical worker %s stopped unexpectedly", result.name)
-		case parent.Err() == nil:
-			cause = fmt.Errorf("critical worker %s failed: %w", result.name, result.err)
 		default:
-			cause = parent.Err()
+			cause = fmt.Errorf("critical worker %s failed: %w", result.name, result.err)
 		}
 	}
 	cancel()

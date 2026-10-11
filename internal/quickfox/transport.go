@@ -131,6 +131,9 @@ func dialRelay(ctx context.Context, dial provider.DialContextFunc, host string, 
 	connection, err := dial(dialContext, "tcp", net.JoinHostPort(host, strconv.Itoa(int(port))))
 	cancel()
 	if ctx.Err() != nil {
+		if err == nil {
+			_ = connection.Close()
+		}
 		return nil, ctx.Err()
 	}
 	if err != nil {
