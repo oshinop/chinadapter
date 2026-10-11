@@ -28,6 +28,10 @@ var (
 	ErrAccountExists    = errors.New("provider: account already exists")
 	ErrNoSession        = errors.New("provider: no refreshable session")
 	ErrAuthorityExpired = errors.New("provider: authority expired")
+	// ErrSessionRejected means the upstream explicitly invalidated the stored
+	// session. Only explicit rejection codes map here; every other driver error
+	// is transient and must never delete provider state.
+	ErrSessionRejected = errors.New("provider: session rejected by upstream")
 )
 
 // ID is a stable provider implementation identifier, such as "kuaifan".
