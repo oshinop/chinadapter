@@ -1,5 +1,5 @@
-# Explicit developer-only override. This standalone Compose project retains a
-# local tag; production compose.yaml requires separate repository and digest variables.
+# Developer-only Compose project: builds the image locally instead of pulling
+# ghcr.io/oshinop/kfadapter:latest like the production compose.yaml.
 name: kfadapter-local
 
 services:

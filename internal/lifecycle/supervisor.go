@@ -145,9 +145,9 @@ func Watchdog(interval time.Duration, threshold int, probe func(context.Context)
 	}
 }
 
-// RequireContainer rejects unsupported bare-process starts. Native-Linux host
-// validation is performed by scripts/preflight.sh because Docker Desktop cannot
-// be reliably distinguished from inside its Linux VM without a Docker socket.
+// RequireContainer rejects unsupported bare-process starts. It cannot tell
+// Docker Desktop from native Linux from inside the container, so the supported
+// host (native Linux with host networking) is documented rather than checked.
 func RequireContainer() error {
 	if runtime.GOOS != "linux" {
 		return fmt.Errorf("production requires a Linux container, got %s", runtime.GOOS)

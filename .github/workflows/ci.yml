@@ -38,9 +38,7 @@ jobs:
           go vet ./...
           go test -race -count=1 ./...
       - name: Validate Compose
-        env:
-          KFADAPTER_IMAGE_DIGEST: sha256:0000000000000000000000000000000000000000000000000000000000000000
-        run: docker compose --env-file /dev/null -f compose.yaml config --quiet
+        run: docker compose -f compose.yaml config --quiet
       - name: Build and smoke-test image
         run: |
           docker build --build-arg VERSION=0.0.0-ci -t kfadapter:ci .
