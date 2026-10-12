@@ -60,9 +60,9 @@ func TestKuaifanIOSRejectionKeepsWindowsNodes(t *testing.T) {
 			iosClient, windowsClient := testControlClients(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
 				windows := request.Header.Get("User-Agent") == wireprofile.WindowsUserAgent
 				if !windows && request.URL.Path == rejectedRoute && reject.Load() {
-					// Inject a classified rejection at the transport seam. No live
-					// refresh-side business rejection code is confirmed yet.
-					return nil, provider.ErrSessionRejected
+					// Live KuaiFan answers a token it no longer accepts with
+					// business status -5 on authenticated endpoints.
+					return encryptedHTTPResponse(t, map[string]any{"status": -5, "fields": map[string]any{}}), nil
 				}
 				return lifecycleResponse(t, request, authKey), nil
 			}))
@@ -210,6 +210,19 @@ func TestKuaifanBusinessStatusRemainsTransient(t *testing.T) {
 	partial, err := lifecycleDriver(t, iosClient, windowsClient).Refresh(context.Background(), lifecycleSnapshot())
 	if !errors.Is(err, ErrBusinessStatus) || errors.Is(err, provider.ErrSessionRejected) || !reflect.DeepEqual(partial, provider.Snapshot{}) {
 		t.Fatalf("unconfirmed refresh rejection = %#v, %v", partial, err)
+	}
+}
+
+func TestKuaifanRejectedStatusOnBothProfilesIsSessionRejection(t *testing.T) {
+	iosClient, windowsClient := testControlClients(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
+		if request.URL.Path == "/v4/client/conf.do" {
+			return encryptedHTTPResponse(t, envelope(map[string]any{})), nil
+		}
+		return encryptedHTTPResponse(t, map[string]any{"status": -5, "fields": map[string]any{}}), nil
+	}))
+	partial, err := lifecycleDriver(t, iosClient, windowsClient).Refresh(context.Background(), lifecycleSnapshot())
+	if !errors.Is(err, provider.ErrSessionRejected) || !reflect.DeepEqual(partial, provider.Snapshot{}) {
+		t.Fatalf("both profiles rejected = %#v, %v; want ErrSessionRejected", partial, err)
 	}
 }
 

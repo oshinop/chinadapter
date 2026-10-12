@@ -54,7 +54,7 @@ func (windowsClientProfile) refresh(ctx context.Context, c *Client, session Logi
 		return LoginSession{}, err
 	}
 	if *response.Status != 1 && *response.Status != 119 {
-		return LoginSession{}, businessStatus(*response.Status)
+		return LoginSession{}, authenticatedStatus(*response.Status)
 	}
 	updated, err := sessionFromFields(response.Fields, session.APIBase)
 	if err != nil || updated.UserID != session.UserID {
@@ -75,7 +75,7 @@ func (windowsClientProfile) fetchAuthority(ctx context.Context, c *Client, sessi
 		return Authority{}, err
 	}
 	if *response.Status != 1 {
-		return Authority{}, businessStatus(*response.Status)
+		return Authority{}, authenticatedStatus(*response.Status)
 	}
 	providerToken, err := requiredString(response.Fields, "token")
 	if err != nil {
@@ -113,7 +113,7 @@ func (windowsClientProfile) fetchLines(ctx context.Context, c *Client, session L
 		return Lines{}, err
 	}
 	if *response.Status != 1 {
-		return Lines{}, businessStatus(*response.Status)
+		return Lines{}, authenticatedStatus(*response.Status)
 	}
 	return validateLinesForProfile(response.Fields, c.language, windowsClientProfile{})
 }

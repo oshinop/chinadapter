@@ -56,7 +56,7 @@ func (iosClientProfile) refresh(ctx context.Context, c *Client, session LoginSes
 		return LoginSession{}, err
 	}
 	if *response.Status != 1 {
-		return LoginSession{}, businessStatus(*response.Status)
+		return LoginSession{}, authenticatedStatus(*response.Status)
 	}
 	updated, err := sessionFromFields(response.Fields, session.APIBase)
 	if err != nil || updated.UserID != session.UserID {
@@ -77,7 +77,7 @@ func (iosClientProfile) fetchAuthority(ctx context.Context, c *Client, session L
 		return Authority{}, err
 	}
 	if *response.Status != 1 {
-		return Authority{}, businessStatus(*response.Status)
+		return Authority{}, authenticatedStatus(*response.Status)
 	}
 	authKey, err := requiredStringLimit(response.Fields, "authKey", maxAuthorityAuthKeyBytes)
 	if err != nil {
@@ -122,7 +122,7 @@ func (iosClientProfile) fetchLines(ctx context.Context, c *Client, session Login
 		return Lines{}, err
 	}
 	if *response.Status != 1 {
-		return Lines{}, businessStatus(*response.Status)
+		return Lines{}, authenticatedStatus(*response.Status)
 	}
 	return validateLinesForProfile(response.Fields, c.language, iosClientProfile{})
 }

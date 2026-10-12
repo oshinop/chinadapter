@@ -40,22 +40,29 @@ func TestQuickFoxTransientTimeoutIsRetriedAndSucceeds(t *testing.T) {
 	}
 }
 
-func TestQuickFoxClassifiedRejectionIsNotRetried(t *testing.T) {
+func TestQuickFoxRejectedTokenIsSessionRejectionAndNotRetried(t *testing.T) {
 	calls := 0
 	driver := refreshTestDriver(t, controlRoundTripFunc(func(*http.Request) (*http.Response, error) {
 		calls++
-		// No captured refresh-side rejection code is confirmed. Inject the
-		// classification at the transport seam rather than inventing one.
-		return nil, provider.ErrSessionRejected
+		// Live QuickFox answer for a token it no longer accepts: envelope code
+		// 401, no success field, and data echoing a token.
+		encoded, err := json.Marshal(map[string]any{
+			"code": http.StatusUnauthorized, "message": "token失效，请重新登录",
+			"data": map[string]any{"token": "0123456789abcdef0123456789abcdef"},
+		})
+		if err != nil {
+			return nil, err
+		}
+		return &http.Response{StatusCode: http.StatusOK, Body: io.NopCloser(bytes.NewReader(encoded)), Header: make(http.Header)}, nil
 	}))
 	next, err := driver.Refresh(context.Background(), refreshTestSnapshot(t, driver))
 	if !errors.Is(err, provider.ErrSessionRejected) || calls != 1 || !reflect.DeepEqual(next, provider.Snapshot{}) {
-		t.Fatalf("classified rejection = %#v, %v after %d calls", next, err, calls)
+		t.Fatalf("rejected token = %#v, %v after %d calls", next, err, calls)
 	}
 }
 
 func TestQuickFoxBusinessCodeRemainsTransient(t *testing.T) {
-	for _, code := range []int{http.StatusUnauthorized, http.StatusForbidden, http.StatusInternalServerError} {
+	for _, code := range []int{http.StatusForbidden, http.StatusInternalServerError} {
 		t.Run(http.StatusText(code), func(t *testing.T) {
 			calls := 0
 			driver := refreshTestDriver(t, controlRoundTripFunc(func(*http.Request) (*http.Response, error) {

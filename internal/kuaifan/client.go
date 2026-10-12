@@ -9,6 +9,7 @@ import (
 	"errors"
 	"fmt"
 	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
+	"github.com/kfadapter/kfadapter/internal/provider"
 	"io"
 	"net"
 	"net/http"
@@ -504,6 +505,21 @@ func readBounded(reader io.Reader, limit int) ([]byte, error) {
 }
 
 func businessStatus(status int) error { return fmt.Errorf("%w: %d", ErrBusinessStatus, status) }
+
+// sessionRejectedStatus is the business status KuaiFan returns on
+// authenticated endpoints for a token it no longer accepts. Observed live in
+// 2026-10 on refresh.do and getAuthority.do for both profiles.
+const sessionRejectedStatus = -5
+
+// authenticatedStatus classifies a non-success status from an endpoint that
+// carries the login token. Only the observed rejection status ends the
+// session; every other status stays transient.
+func authenticatedStatus(status int) error {
+	if status == sessionRejectedStatus {
+		return fmt.Errorf("%w: %w: %d", provider.ErrSessionRejected, ErrBusinessStatus, status)
+	}
+	return businessStatus(status)
+}
 
 func requiredString(fields map[string]json.RawMessage, name string) (string, error) {
 	return requiredStringLimit(fields, name, maxControlFieldBytes)

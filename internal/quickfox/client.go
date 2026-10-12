@@ -33,6 +33,11 @@ const (
 	maxRequestBytes     = 64 << 10
 	maxResponseBytes    = 1 << 20
 	maxControlFieldSize = 4096
+
+	// sessionRejectedCode is the envelope code QuickFox returns for a token it
+	// no longer accepts, with message "token失效，请重新登录" and no success
+	// field. Observed live in 2026-10 on /user/info.
+	sessionRejectedCode = http.StatusUnauthorized
 )
 
 var (
@@ -292,7 +297,13 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, token
 		return ErrSchema
 	}
 	var wrapped envelope
-	if json.Unmarshal(encoded, &wrapped) != nil || wrapped.Code == nil || wrapped.Success == nil || len(wrapped.Data) == 0 {
+	if json.Unmarshal(encoded, &wrapped) != nil || wrapped.Code == nil {
+		return ErrSchema
+	}
+	if token != "" && *wrapped.Code == sessionRejectedCode {
+		return fmt.Errorf("%w: %w", provider.ErrSessionRejected, &businessCodeError{code: *wrapped.Code})
+	}
+	if wrapped.Success == nil || len(wrapped.Data) == 0 {
 		return ErrSchema
 	}
 	if *wrapped.Code != http.StatusOK || !*wrapped.Success {
