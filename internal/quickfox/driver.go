@@ -2,17 +2,12 @@ package quickfox
 
 import (
 	"context"
-	"encoding/hex"
 	"encoding/json"
 	"errors"
 	"fmt"
-	"net/netip"
 	"strconv"
-	"strings"
 	"time"
-	"unicode/utf8"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -116,130 +111,6 @@ type tunnelAuthority struct {
 	AppID  uint32 `json:"appId"`
 }
 
-type vipPeriod struct {
-	EndTime string `json:"endTime"`
-	Grade   int    `json:"grade"`
-}
-
-type svipStatus struct {
-	Time int64 `json:"svipTime"`
-}
-
-type accountPayload struct {
-	Token           string      `json:"token"`
-	UserID          int64       `json:"userId"`
-	Email           string      `json:"email"`
-	Username        string      `json:"username"`
-	VIPTime         flexInt64   `json:"vipTime"`
-	SVIP            svipStatus  `json:"svip"`
-	VIPSubscription []vipPeriod `json:"vipInfo"`
-}
-
-// flexInt64 accepts an integer sent either as a JSON number or as a quoted
-// decimal string; QuickFox has used both forms for vipTime. Anything else,
-// including fractions and non-numeric strings, is rejected.
-type flexInt64 int64
-
-func (value *flexInt64) UnmarshalJSON(data []byte) error {
-	text := string(data)
-	if text == "null" {
-		return nil
-	}
-	if len(text) >= 2 && text[0] == '"' && text[len(text)-1] == '"' {
-		text = text[1 : len(text)-1]
-	}
-	parsed, err := strconv.ParseInt(text, 10, 64)
-	if err != nil {
-		return fmt.Errorf("%w: integer field", ErrSchema)
-	}
-	*value = flexInt64(parsed)
-	return nil
-}
-
-type loginResponse struct {
-	accountPayload
-}
-
-func (payload accountPayload) account(location *time.Location, now time.Time) (provider.Account, error) {
-	if payload.UserID <= 0 {
-		return provider.Account{}, ErrSchema
-	}
-	identity := strings.TrimSpace(payload.Email)
-	if identity == "" {
-		identity = strings.TrimSpace(payload.Username)
-	}
-	if !validMetadata(identity) {
-		return provider.Account{}, ErrSchema
-	}
-	tier := standardTier
-	subscriptionGrade := 0
-	if payload.SVIP.Time > 0 {
-		tier = svipTier
-		subscriptionGrade = 2
-	} else if payload.VIPTime > 0 {
-		tier = vipTier
-		subscriptionGrade = 1
-	}
-	// vipInfo grades do not reliably match the tier: a live SVIP account lists
-	// its only period as grade 1. Prefer a period whose grade matches the tier,
-	// otherwise use the latest listed period. Either way the expiry is an exact
-	// server-supplied time, never inferred from day counters.
-	var subscriptionEndsAt, latestEndsAt time.Time
-	for _, period := range payload.VIPSubscription {
-		if period.Grade != 1 && period.Grade != 2 {
-			return provider.Account{}, ErrSchema
-		}
-		if period.EndTime == "" {
-			continue
-		}
-		parsed, err := time.ParseInLocation("2006-01-02 15:04:05", period.EndTime, location)
-		if err != nil {
-			return provider.Account{}, ErrSchema
-		}
-		if parsed.After(latestEndsAt) {
-			latestEndsAt = parsed.UTC()
-		}
-		if period.Grade == subscriptionGrade && parsed.After(subscriptionEndsAt) {
-			subscriptionEndsAt = parsed.UTC()
-		}
-	}
-	if subscriptionGrade != 0 && subscriptionEndsAt.IsZero() {
-		subscriptionEndsAt = latestEndsAt
-	}
-	active := subscriptionGrade != 0
-	if active && !subscriptionEndsAt.After(now) {
-		return provider.Account{}, ErrSchema
-	}
-	return provider.Account{
-		UserID: strconv.FormatInt(payload.UserID, 10), Display: provider.RedactAccount(identity), Tier: tier,
-		SubscriptionActive: active, SubscriptionEndsAt: subscriptionEndsAt,
-	}, nil
-}
-
-type lineGroup struct {
-	TypeID   int          `json:"typeId"`
-	TypeName string       `json:"typeName"`
-	Regions  []lineRegion `json:"regionNameList"`
-}
-
-type lineRegion struct {
-	RegionID *int       `json:"regionId"`
-	Name     string     `json:"regionName"`
-	Lines    []linePool `json:"linePoolList"`
-}
-
-type linePool struct {
-	PoolID       int64  `json:"linePoolId"`
-	Name         string `json:"lineName"`
-	PoolName     string `json:"linePoolName"`
-	ConnectIP    string `json:"connectIp"`
-	ConnectPort  uint16 `json:"connectPort"`
-	ProtocolType string `json:"protocolType"`
-	FeeType      int    `json:"feeType"`
-	Hidden       int    `json:"isHide"`
-	Status       *int   `json:"status"`
-}
-
 func (driver *Driver) snapshot(stored storedSession, catalog catalog) (provider.Snapshot, error) {
 	// Native tunnel authentication encodes the user ID in a uint32 field.
 	if stored.UserID > int64(^uint32(0)) || catalog.Profile.UserID > int64(^uint32(0)) {
@@ -272,84 +143,6 @@ func (driver *Driver) snapshot(stored storedSession, catalog catalog) (provider.
 	return snapshot, nil
 }
 
-func nodesFromCatalog(groups []lineGroup, tier string) ([]provider.Node, error) {
-	if len(groups) == 0 || len(groups) > maxCatalogGroups {
-		return nil, ErrSchema
-	}
-	nodes := make([]provider.Node, 0, 512)
-	seen := make(map[string]struct{}, 512)
-	regionCount := 0
-	lineCount := 0
-	for _, group := range groups {
-		if group.TypeID <= 0 || !validMetadata(group.TypeName) || len(group.Regions) > maxCatalogRegions-regionCount {
-			return nil, ErrInvalidLine
-		}
-		regionCount += len(group.Regions)
-		for _, region := range group.Regions {
-			if !validMetadata(region.Name) || len(region.Lines) > maxCatalogLines-lineCount {
-				return nil, ErrInvalidLine
-			}
-			lineCount += len(region.Lines)
-			for _, line := range region.Lines {
-				node, err := catalogNode(group, region, line, tier)
-				if err != nil {
-					return nil, err
-				}
-				if !node.Eligible {
-					continue
-				}
-				if _, duplicate := seen[node.ID]; duplicate {
-					continue
-				}
-				seen[node.ID] = struct{}{}
-				nodes = append(nodes, node)
-			}
-		}
-	}
-	if lineCount == 0 || lineCount > maxCatalogLines {
-		return nil, ErrInvalidLine
-	}
-	return nodes, nil
-}
-
-func catalogNode(group lineGroup, region lineRegion, line linePool, tier string) (provider.Node, error) {
-	feeEligible, validFeeType := feeTypeEligible(tier, line.FeeType)
-	if line.PoolID <= 0 || !validMetadata(line.Name) || !validMetadata(line.PoolName) || line.Name != line.PoolName ||
-		line.ProtocolType != "socks" || line.Hidden != 0 || !validFeeType {
-		return provider.Node{}, ErrInvalidLine
-	}
-	address, err := netip.ParseAddr(line.ConnectIP)
-	if err != nil || !address.Is4() || address.String() != line.ConnectIP || line.ConnectPort == 0 {
-		return provider.Node{}, ErrInvalidLine
-	}
-	id, err := identity.NodeID(identity.Route{Provider: ProviderID, Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort})
-	if err != nil {
-		return provider.Node{}, fmt.Errorf("%w: node identity: %w", ErrInvalidLine, err)
-	}
-	eligible := (line.Status == nil || *line.Status == 1) && feeEligible
-	return provider.Node{
-		ID: id, AuthorityID: authorityID,
-		Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort, Name: line.Name,
-		Group: group.TypeName + " / " + region.Name, Model: group.TypeName, Eligible: eligible,
-	}, nil
-}
-
-func feeTypeEligible(tier string, feeType int) (bool, bool) {
-	if tier != standardTier && tier != vipTier && tier != svipTier {
-		return false, false
-	}
-	switch feeType {
-	case 0:
-		return true, true
-	case 1, 2:
-		return tier == vipTier || tier == svipTier, true
-	case 3:
-		return tier == svipTier, true
-	default:
-		return false, false
-	}
-}
-
 func decodeStoredSession(encoded []byte) (storedSession, error) {
 	var stored storedSession
 	if len(encoded) == 0 || len(encoded) > 1<<20 || json.Unmarshal(encoded, &stored) != nil ||
@@ -366,40 +159,4 @@ func decodeTunnelAuthority(encoded []byte) (tunnelAuthority, error) {
 		return tunnelAuthority{}, ErrSchema
 	}
 	return authority, nil
-}
-
-func deviceCode(installationID string) (string, error) {
-	raw, err := hex.DecodeString(installationID)
-	if err != nil || len(raw) != 16 || hex.EncodeToString(raw) != installationID {
-		return "", ErrSchema
-	}
-	raw[6] = raw[6]&0x0f | 0x40
-	raw[8] = raw[8]&0x3f | 0x80
-	encoded := hex.EncodeToString(raw)
-	return fmt.Sprintf("%s-%s-%s-%s-%s", encoded[:8], encoded[8:12], encoded[12:16], encoded[16:20], encoded[20:]), nil
-}
-
-func validDeviceCode(value string) bool {
-	if len(value) != 36 || value[8] != '-' || value[13] != '-' || value[18] != '-' || value[23] != '-' {
-		return false
-	}
-	raw := strings.ReplaceAll(value, "-", "")
-	decoded, err := hex.DecodeString(raw)
-	return err == nil && len(decoded) == 16 && decoded[6]>>4 == 4 && decoded[8]>>6 == 2 && hex.EncodeToString(decoded) == raw
-}
-
-func validToken(value string) bool {
-	if len(value) == 0 || len(value) > 200 || !utf8.ValidString(value) || strings.ContainsAny(value, ",\x00") {
-		return false
-	}
-	for _, character := range []byte(value) {
-		if character < 0x21 || character > 0x7e {
-			return false
-		}
-	}
-	return true
-}
-
-func validMetadata(value string) bool {
-	return value != "" && len(value) <= maxMetadataBytes && utf8.ValidString(value) && strings.IndexByte(value, 0) < 0
 }
