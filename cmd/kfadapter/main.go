@@ -19,7 +19,7 @@ const (
 	configPath     = "./config.yaml"
 	stateDirectory = "./data"
 )
-const usageLine = "usage: kfadapter [serve|healthcheck|version|validate-config|validate-state]"
+const usageLine = "usage: kfadapter [serve|healthcheck|version|validate-config]"
 
 // version is overwritten by Docker's -ldflags at build time.
 var version = "devel"
@@ -73,13 +73,6 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 			return 1
 		}
 		fmt.Fprintln(stdout, "configuration valid")
-		return 0
-	case "validate-state":
-		if err := validateState(arguments[1:]); err != nil {
-			fmt.Fprintln(stderr, "kfadapter: invalid state")
-			return 1
-		}
-		fmt.Fprintln(stdout, "state valid")
 		return 0
 	default:
 		fmt.Fprintln(stderr, usageLine)

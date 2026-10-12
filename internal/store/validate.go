@@ -6,10 +6,8 @@ import (
 	"errors"
 	"fmt"
 	"os"
-	"path/filepath"
 	"strings"
 	"syscall"
-	"time"
 
 	domain "github.com/kfadapter/kfadapter/internal/state"
 )
@@ -47,55 +45,6 @@ func (s *SQLiteStore) validate() error {
 		return domain.ErrInsecureStatePath
 	}
 	return ValidateStateDir(s.dir)
-}
-
-// ValidateSQLiteFile validates an existing state.db without creating or
-// modifying it. Optional semantic validators inspect the reconstructed
-// aggregate after relational validation succeeds.
-func ValidateSQLiteFile(ctx context.Context, path string, semantic ...func(domain.PersistentState) error) error {
-	if path == "" {
-		return domain.ErrInsecureStatePath
-	}
-	clean := filepath.Clean(path)
-	if err := ValidateStateDir(filepath.Dir(clean)); err != nil {
-		return err
-	}
-	if err := validateSecureStateFile(clean, maxSQLiteStateBytes); err != nil {
-		return err
-	}
-	db, err := openSQLite(ctx, clean, true)
-	if err != nil {
-		return corruptDatabase(err)
-	}
-	defer func() { _ = db.Close() }()
-	if err := configureSQLiteReadOnly(ctx, db); err != nil {
-		return corruptDatabase(err)
-	}
-	if err := checkSQLiteIntegrity(ctx, db); err != nil {
-		return err
-	}
-	if err := validateSQLiteJournalMode(ctx, db); err != nil {
-		return err
-	}
-	if err := validateSQLiteSchema(ctx, db); err != nil {
-		return err
-	}
-	tx, err := db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
-	if err != nil {
-		return corruptDatabase(err)
-	}
-	defer tx.Rollback()
-	state, err := loadPersistentStateTx(ctx, tx)
-	if err != nil {
-		return err
-	}
-	if err := validateBrowserSessionsTx(ctx, tx, time.Now().UTC(), maxBrowserSessions, false); err != nil {
-		return err
-	}
-	if err := validatePersistentStateSemantics(state, semantic); err != nil {
-		return err
-	}
-	return corruptDatabase(tx.Commit())
 }
 
 func validatePersistentStateSemantics(state domain.PersistentState, validators []func(domain.PersistentState) error) error {
