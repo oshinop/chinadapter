@@ -2,8 +2,6 @@ package kuaifan
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -11,9 +9,9 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/selector"
 )
 
 const (
@@ -496,11 +494,14 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 		if !line.Eligible {
 			continue
 		}
-		identity, err := selector.Canonicalize(selector.NodeIdentity{Provider: string(ProviderID), Host: line.Host, Port: int(line.Port)})
+		route, err := identity.Canonicalize(identity.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: line.Host, Port: line.Port})
 		if err != nil {
-			return nil, fmt.Errorf("%w: canonical node identity", ErrSchema)
+			return nil, fmt.Errorf("%w: canonical node identity: %w", ErrSchema, err)
 		}
-		id := nodeID(identity, line.GroupID)
+		id, err := identity.NodeID(route)
+		if err != nil {
+			return nil, fmt.Errorf("%w: node identity: %w", ErrSchema, err)
+		}
 		if _, duplicate := seen[id]; duplicate {
 			continue
 		}
@@ -510,17 +511,11 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 			groupName = groups[line.GroupID]
 		}
 		nodes = append(nodes, provider.Node{
-			ID: id, AuthorityID: string(profileID), Protocol: WIFIINProtocol, Host: identity.Host, Port: identity.Port,
+			ID: id, AuthorityID: string(profileID), Protocol: WIFIINProtocol, Host: route.Host, Port: route.Port,
 			Name: line.Label, Group: groupName, Model: line.Model, Weight: line.Weight, Auto: line.Auto, Eligible: line.Eligible,
 		})
 	}
 	return nodes, nil
-}
-
-func nodeID(identity selector.CanonicalIdentity, groupID string) string {
-	payload := []byte(groupID + "\x00" + identity.Host + "\x00" + fmt.Sprintf("%d", identity.Port))
-	sum := sha256.Sum256(payload)
-	return "kuaifan_" + base64.RawURLEncoding.EncodeToString(sum[:12])
 }
 
 func (driver *Driver) now() time.Time { return driver.clock() }

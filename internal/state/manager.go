@@ -1,13 +1,13 @@
 package state
 
 import (
-	"crypto/sha256"
 	"crypto/subtle"
 	"fmt"
 	"sync"
 	"sync/atomic"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -75,78 +75,28 @@ type Status struct {
 	Eligible   int                            `json:"eligible"`
 }
 
-// AccountBindingStatus reports whether a raw account ID is authorized by the
-// durable selector-key binding without exposing that identifier.
-type AccountBindingStatus string
-
-const (
-	AccountBindingUnbound  AccountBindingStatus = "unbound"
-	AccountBindingMatch    AccountBindingStatus = "match"
-	AccountBindingMismatch AccountBindingStatus = "mismatch"
-)
-
 // Manager serializes service-state transitions and wraps a RuntimeStore.
 type Manager struct {
 	runtime *RuntimeStore
 
-	mu                   sync.Mutex
-	state                ServiceState
-	active               Operation
-	lease                uint64
-	subscription         SubscriptionAuthority
-	previousState        ServiceState
-	accountBindingKey    []byte
-	bindingKeyConfigured bool
+	mu            sync.Mutex
+	state         ServiceState
+	active        Operation
+	lease         uint64
+	previousState ServiceState
 }
 
-// NewManager constructs a manager with no durable account-binding authority.
+// NewManager restores the provider catalog without account-bound credentials.
 func NewManager(initial *RuntimeSnapshot) (*Manager, error) {
-	return NewManagerWithSubscription(initial, SubscriptionAuthority{}, nil)
-}
-
-// NewManagerWithSubscription restores persisted subscription authority.
-func NewManagerWithSubscription(initial *RuntimeSnapshot, subscription SubscriptionAuthority, bindingKey []byte) (*Manager, error) {
-	if len(bindingKey) != 0 && len(bindingKey) != sha256.Size {
-		return nil, ErrAccountChanged
-	}
-	if len(subscription.SelectorKey) != 0 && validateSubscriptionAuthority(subscription) != nil {
-		return nil, ErrAccountChanged
-	}
-	if len(subscription.AccountBinding) != 0 && len(bindingKey) != sha256.Size {
-		return nil, ErrAccountChanged
-	}
 	store, err := NewRuntimeStore(initial)
 	if err != nil {
 		return nil, err
 	}
-	manager := &Manager{runtime: store, state: StateSignedOut, subscription: subscription.clone(), accountBindingKey: append([]byte(nil), bindingKey...), bindingKeyConfigured: len(bindingKey) == sha256.Size}
-	if initial != nil {
-		if SessionUsable(initial, time.Time{}) {
-			if !manager.bindingKeyConfigured || len(subscription.AccountBinding) != sha256.Size || !matchesAccountBinding(subscription.AccountBinding, bindingKey, initial.AccountBindingID()) {
-				return nil, ErrAccountChanged
-			}
-			manager.state = StateReady
-		} else if len(initial.Nodes) != 0 {
-			manager.state = StateSignedOut
-		}
+	manager := &Manager{runtime: store, state: StateSignedOut}
+	if SessionUsable(initial, time.Time{}) {
+		manager.state = StateReady
 	}
 	return manager, nil
-}
-
-// ConfigureBindingKey installs the verifier-derived account-binding key once.
-// It must be called after first-token setup and never accepts raw tokens.
-func (m *Manager) ConfigureBindingKey(bindingKey []byte) error {
-	if m == nil || len(bindingKey) != sha256.Size {
-		return ErrAccountChanged
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if m.bindingKeyConfigured {
-		return ErrBindingKeyAlreadyConfigured
-	}
-	m.accountBindingKey = append([]byte(nil), bindingKey...)
-	m.bindingKeyConfigured = true
-	return nil
 }
 
 // Current returns an immutable copy of the current generation.
@@ -166,8 +116,8 @@ type TunnelPin struct {
 	Ref       NodeRef
 }
 
-// CompactPin atomically resolves one authenticated selector from the immutable
-// snapshot. Authentication is performed by selector.Registry first.
+// CompactPin resolves a live username directly from the atomically published
+// snapshot map. The SOCKS server compares the instance password afterwards.
 func (m *Manager) CompactPin(selector string, now time.Time) (TunnelPin, error) {
 	if m == nil || selector == "" {
 		return TunnelPin{}, ErrSelectorUnknown
@@ -181,7 +131,7 @@ func (m *Manager) CompactPin(selector string, now time.Time) (TunnelPin, error) 
 	if !SessionUsable(current, now) {
 		return TunnelPin{}, ErrSelectorUnknown
 	}
-	node, ref, err := current.ResolveSelector(selector, now)
+	node, ref, err := current.ResolveSelector(selector)
 	if err != nil {
 		return TunnelPin{}, err
 	}
@@ -204,78 +154,21 @@ func (m *Manager) SessionCurrentPin(pin TunnelPin, now time.Time) bool {
 	defer m.mu.Unlock()
 	current := m.runtime.snapshot.Load()
 	return (m.state == StateReady || m.state == StateDegraded || m.state == StateSyncing) &&
-		current != nil && SessionUsable(current, now) && currentSessionMatchesPin(current, pin, now)
+		current != nil && SessionUsable(current, now) && currentSessionMatchesPin(current, pin)
 }
 
-// InstallEpoch installs a durable candidate only while an authentication
-// operation is active. A same-account refresh retains keys; a cutover rotates both.
-func (m *Manager) InstallEpoch(candidate SubscriptionAuthority, userID string) (func(), error) {
-	if m == nil || validateSubscriptionAuthority(candidate) != nil {
-		return nil, ErrAccountChanged
-	}
-	m.mu.Lock()
-	if (m.state != StateAuthenticating && m.state != StateSyncing) || !m.bindingKeyConfigured || len(m.accountBindingKey) != sha256.Size || len(candidate.AccountBinding) != sha256.Size || !matchesAccountBinding(candidate.AccountBinding, m.accountBindingKey, userID) {
-		m.mu.Unlock()
-		return nil, ErrAccountChanged
-	}
-	current := m.subscription
-	if len(current.SelectorKey) != 0 {
-		if len(current.AccountBinding) == 0 || subtle.ConstantTimeCompare(current.AccountBinding, candidate.AccountBinding) == 1 {
-			if !sameSubscriptionCredentials(current, candidate) {
-				m.mu.Unlock()
-				return nil, ErrAccountChanged
-			}
-		} else if !rotatedSubscriptionMaterial(current, candidate) {
-			m.mu.Unlock()
-			return nil, ErrAccountChanged
-		}
-	}
-	previous := current.clone()
-	m.subscription = candidate.clone()
-	m.mu.Unlock()
-	var once sync.Once
-	return func() {
-		once.Do(func() {
-			m.mu.Lock()
-			defer m.mu.Unlock()
-			if sameSubscriptionAuthority(m.subscription, candidate) {
-				m.subscription = previous
-			}
-		})
-	}, nil
-}
-
-func sameSubscriptionCredentials(left, right SubscriptionAuthority) bool {
-	return subtle.ConstantTimeCompare(left.SelectorKey, right.SelectorKey) == 1 && subtle.ConstantTimeCompare(left.ProxyAuthKey, right.ProxyAuthKey) == 1
-}
-func sameSubscriptionAuthority(left, right SubscriptionAuthority) bool {
-	return sameSubscriptionCredentials(left, right) && subtle.ConstantTimeCompare(left.AccountBinding, right.AccountBinding) == 1
-}
-
-// AccountBindingStatus checks the supplied account against durable authority
-// without retaining the raw identifier.
-func (m *Manager) AccountBindingStatus(userID string) AccountBindingStatus {
-	if m == nil {
-		return AccountBindingMismatch
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !m.bindingKeyConfigured || len(m.subscription.SelectorKey) == 0 || len(m.subscription.AccountBinding) == 0 {
-		return AccountBindingUnbound
-	}
-	if matchesAccountBinding(m.subscription.AccountBinding, m.accountBindingKey, userID) {
-		return AccountBindingMatch
-	}
-	return AccountBindingMismatch
-}
-
-func currentSessionMatchesPin(current *RuntimeSnapshot, pin TunnelPin, _ time.Time) bool {
+func currentSessionMatchesPin(current *RuntimeSnapshot, pin TunnelPin) bool {
 	if current == nil {
 		return false
 	}
-	_, available := current.Providers[pin.Node.Provider]
-	authority, authorityAvailable := current.Authority(pin.Node)
-	return available && authorityAvailable &&
+	node, available := current.NodeByID(pin.Node.ID)
+	if !available || !node.TunnelEligible() {
+		return false
+	}
+	left, leftErr := identity.NodeKey(node.Route())
+	right, rightErr := identity.NodeKey(pin.Node.Route())
+	authority, authorityAvailable := current.Authority(node)
+	return leftErr == nil && rightErr == nil && left == right && node.AuthorityID == pin.Node.AuthorityID && authorityAvailable &&
 		authority.Protocol == pin.Authority.Protocol && subtle.ConstantTimeCompare(authority.Data, pin.Authority.Data) == 1
 }
 
@@ -432,8 +325,7 @@ func validTransition(from, to ServiceState) bool {
 	}
 }
 
-// Commit publishes a complete newly refreshed snapshot only for the account
-// already installed in durable subscription state.
+// Commit publishes a complete provider snapshot after the durable commit.
 func (m *Manager) Commit(snapshot *RuntimeSnapshot) error {
 	if m == nil || snapshot == nil {
 		return ErrInvalidSnapshot
@@ -463,19 +355,11 @@ func (m *Manager) Commit(snapshot *RuntimeSnapshot) error {
 	if m.runtime.snapshot.Load() != nil && snapshot.Generation <= m.runtime.snapshot.Load().Generation {
 		return fmt.Errorf("%w: non-monotonic generation", ErrInvalidSnapshot)
 	}
-	if !m.bindingKeyConfigured || len(m.subscription.SelectorKey) == 0 || len(m.subscription.AccountBinding) != sha256.Size || !matchesAccountBinding(m.subscription.AccountBinding, m.accountBindingKey, snapshot.AccountBindingID()) {
-		return ErrAccountChanged
-	}
 	m.runtime.replace(snapshot)
 	if m.state == StateAuthenticating || m.state == StateSyncing {
 		m.state = StateReady
 	}
 	return nil
-}
-
-func rotatedSubscriptionMaterial(current, candidate SubscriptionAuthority) bool {
-	return subtle.ConstantTimeCompare(current.SelectorKey, candidate.SelectorKey) != 1 &&
-		subtle.ConstantTimeCompare(current.ProxyAuthKey, candidate.ProxyAuthKey) != 1
 }
 
 // SignOut removes session material from the current generation while preserving

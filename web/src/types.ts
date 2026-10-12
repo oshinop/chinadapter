@@ -67,6 +67,7 @@ export interface NodeDetails {
   upstreamPort: number;
   socksAddress: string;
   socksUsername: string;
+  /** Installation-wide lowercase UUIDv8; shared by every node. */
   socksPassword: string;
   health: NodeHealth;
   tcpLatencyMs?: number;
@@ -82,6 +83,7 @@ export interface SubscriptionMetadata {
 }
 
 export interface SubscriptionURLResponse {
+  /** Absolute URL ending in /sub/<lowercase canonical UUIDv8>. */
   url: string;
 }
 
@@ -96,6 +98,11 @@ export interface AccessStatusResponse {
 export interface AccessSessionResponse {
   csrfToken?: string;
   expiresAt?: string;
+}
+
+export interface AccessTokenChangeInput {
+  current: string;
+  next: string;
 }
 
 export interface LoginResponse {

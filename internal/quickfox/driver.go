@@ -2,8 +2,6 @@ package quickfox
 
 import (
 	"context"
-	"crypto/sha256"
-	"encoding/base64"
 	"encoding/hex"
 	"encoding/json"
 	"errors"
@@ -14,6 +12,7 @@ import (
 	"time"
 	"unicode/utf8"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -260,13 +259,14 @@ func nodesFromCatalog(groups []lineGroup, tier string) ([]provider.Node, error) 
 				if err != nil {
 					return nil, err
 				}
+				if !node.Eligible {
+					continue
+				}
 				if _, duplicate := seen[node.ID]; duplicate {
-					return nil, ErrInvalidLine
+					continue
 				}
 				seen[node.ID] = struct{}{}
-				if node.Eligible {
-					nodes = append(nodes, node)
-				}
+				nodes = append(nodes, node)
 			}
 		}
 	}
@@ -286,15 +286,13 @@ func catalogNode(group lineGroup, region lineRegion, line linePool, tier string)
 	if err != nil || !address.Is4() || address.String() != line.ConnectIP || line.ConnectPort == 0 {
 		return provider.Node{}, ErrInvalidLine
 	}
-	regionID := ""
-	if region.RegionID != nil {
-		regionID = strconv.Itoa(*region.RegionID)
+	id, err := identity.NodeID(identity.Route{Provider: ProviderID, Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort})
+	if err != nil {
+		return provider.Node{}, fmt.Errorf("%w: node identity: %w", ErrInvalidLine, err)
 	}
-	identity := strings.Join([]string{strconv.Itoa(group.TypeID), regionID, region.Name, strconv.FormatInt(line.PoolID, 10), line.ConnectIP, strconv.Itoa(int(line.ConnectPort))}, "\x00")
-	digest := sha256.Sum256([]byte(identity))
 	eligible := (line.Status == nil || *line.Status == 1) && feeEligible
 	return provider.Node{
-		ID: "quickfox_" + base64.RawURLEncoding.EncodeToString(digest[:12]), AuthorityID: authorityID,
+		ID: id, AuthorityID: authorityID,
 		Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort, Name: line.Name,
 		Group: group.TypeName + " / " + region.Name, Model: group.TypeName, Eligible: eligible,
 	}, nil

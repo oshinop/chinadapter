@@ -2,7 +2,7 @@ import { vi } from "vitest";
 import { type ApiClient } from "../api";
 import type { NodeDetails, NodeRecord, StatusResponse } from "../types";
 
-export const currentConsumerURL = "http://127.0.0.1:10809/sub/0123456789012345678901234567890123456789012";
+export const currentConsumerURL = "http://127.0.0.1:10809/sub/00112233-4455-8677-8899-aabbccddeeff";
 
 export const readyStatus = (): StatusResponse => ({
   state: "ready",
@@ -37,8 +37,8 @@ export const chengduDetails: NodeDetails = {
   upstreamHost: "127.0.0.1",
   upstreamPort: 10808,
   socksAddress: "127.0.0.1:10808",
-  socksUsername: "local-socks-user",
-  socksPassword: "local-socks-password",
+  socksUsername: "n_AAECAwQFBgcICQoL",
+  socksPassword: "10213243-5465-8768-899a-abbccddeeff0",
   health: "degraded",
   tcpLatencyMs: 114,
 };
@@ -57,6 +57,7 @@ export function makeApi(initialStatus = readyStatus(), initialNodes = nodes): Ap
     accessStatus: vi.fn().mockImplementation(async () => state.access),
     setupAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, initialized: true, authenticated: true }; return { csrfToken: "csrf-test" }; }),
     loginAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, authenticated: true }; return { csrfToken: "csrf-test" }; }),
+    changeAccessToken: vi.fn().mockResolvedValue({ csrfToken: "csrf-rotated" }),
     status: vi.fn().mockImplementation(async () => state.statusValue),
     nodes: vi.fn().mockImplementation(async () => ({ nodes: state.nodeList })),
     nodeDetails: vi.fn().mockResolvedValue(chengduDetails),

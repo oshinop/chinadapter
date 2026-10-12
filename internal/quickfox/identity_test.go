@@ -11,7 +11,7 @@ func TestCatalogNodeCanonicalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := node.ID, "quickfox_oPBFuUUKYh007NL5"; got != want {
+	if got, want := node.ID, "quickfox_auLS0Ffo5ZPQc6Qv"; got != want {
 		t.Fatalf("node ID = %q, want %q", got, want)
 	}
 	changed := line
@@ -20,7 +20,7 @@ func TestCatalogNodeCanonicalIdentity(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if other.ID == node.ID {
-		t.Fatal("pool ID must affect canonical identity")
+	if other.ID != node.ID {
+		t.Fatal("display pool ID must not affect canonical identity")
 	}
 }

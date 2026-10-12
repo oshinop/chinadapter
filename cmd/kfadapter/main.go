@@ -26,7 +26,6 @@ import (
 	"github.com/kfadapter/kfadapter/internal/provider"
 	providercoordinator "github.com/kfadapter/kfadapter/internal/provider/coordinator"
 	"github.com/kfadapter/kfadapter/internal/quickfox"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
@@ -118,7 +117,7 @@ func validateState(arguments []string) error {
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || strings.TrimSpace(*path) == "" {
 		return errors.New("invalid validate-state arguments")
 	}
-	return state.ValidateSQLiteFile(*path, subscription.ValidatePersistentState)
+	return state.ValidateSQLiteFile(context.Background(), *path)
 }
 
 func healthcheck(arguments []string) error {
@@ -192,25 +191,18 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	}
 	defer func() {
 		if err != nil {
-			_ = store.Close()
+			_ = store.Close(context.Background())
 		}
 	}()
-	persistent, err := store.LoadOrCreate(subscription.ValidatePersistentState)
+	persistent, err := store.LoadOrCreate(context.Background())
 	if err != nil {
 		return nil, err
 	}
-	var bindingKey []byte
-	if persistent.AccessTokenInitialized() {
-		if persistent.AccessTokenVerifier == nil {
-			return nil, errors.New("access verifier missing")
-		}
-		bindingKey = persistent.AccessTokenVerifier.BindingKey()
-	}
-	manager, err := state.NewManagerWithSubscription(persistent.ActiveSession, persistent.Subscription, bindingKey)
+	authority, err := persistent.Identity()
 	if err != nil {
 		return nil, err
 	}
-	registry, err := selector.NewRegistry(persistent.Subscription)
+	manager, err := state.NewManager(persistent.ActiveSession)
 	if err != nil {
 		return nil, err
 	}
@@ -251,27 +243,27 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	}
 	mutationMu := &sync.Mutex{}
 	socksServer, err := socks.New(socks.Config{
-		Snapshots: manager, Selectors: registry, Providers: providers, DialContext: dialer.DialContext,
+		Snapshots: manager, Identity: authority, InitialSnapshot: persistent.ActiveSession, Providers: providers, DialContext: dialer.DialContext,
 		HandshakeTimeout: cfg.Proxy.HandshakeTimeout.Value(),
 	})
 	if err != nil {
 		return nil, err
 	}
-	selectorCoordinator, err := app.NewSelectorCoordinator(socksServer, registry, time.Now)
+	credentialCoordinator, err := app.NewCredentialCoordinator(socksServer, authority)
 	if err != nil {
 		return nil, err
 	}
 	proxyAddress := cfg.ProxyAddress()
 	managementAddress := cfg.ManagementAddress()
 	subscriptionService, err := subscription.NewService(subscription.ServiceConfig{
-		Store: store, SocksAddress: proxyAddress, Now: time.Now, MutationLocker: mutationMu,
+		Store: store, SocksAddress: proxyAddress,
 	})
 	if err != nil {
 		return nil, err
 	}
 	var runtimeFacade *app.Runtime
 	providerCoordinator, err := providercoordinator.New(providercoordinator.Config{
-		Providers: providers, Manager: manager, SelectorBuilder: selectorCoordinator,
+		Providers: providers, Manager: manager, SelectorBuilder: credentialCoordinator,
 		MutationMu: mutationMu,
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
 			if runtimeFacade == nil {
@@ -286,7 +278,7 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	startedAt := time.Now().UTC()
 	runtimeFacade, err = app.NewRuntime(app.RuntimeConfig{
 		Manager: manager, Store: store, Providers: providerCoordinator, Subscriptions: subscriptionService,
-		Selectors: selectorCoordinator, MutationMu: mutationMu, SocksAddress: proxyAddress, HTTPAddress: managementAddress,
+		Credentials: credentialCoordinator, MutationMu: mutationMu, SocksAddress: proxyAddress, HTTPAddress: managementAddress,
 		Version: version, StartedAt: startedAt,
 		RefreshEvery: cfg.Provider.RefreshInterval.Value(), ProbeTimeout: cfg.Proxy.DialTimeout.Value(),
 		AccountRefresh: func(_ provider.ID, err error) {
@@ -396,7 +388,7 @@ func (d *adapter) run() error {
 
 func (d *adapter) runContext(ctx context.Context) (result error) {
 	defer func() {
-		if err := d.store.Close(); err != nil && result == nil {
+		if err := d.store.Close(ctx); err != nil && result == nil {
 			result = err
 		}
 	}()
@@ -439,11 +431,11 @@ func (d *adapter) shutdownWeb(ctx context.Context) error {
 	return d.httpServer.Shutdown(ctx)
 }
 
-func (d *adapter) watchdog(context.Context) error {
+func (d *adapter) watchdog(ctx context.Context) error {
 	if !d.runtime.Healthy() {
 		return errors.New("runtime is stopped")
 	}
-	_, err := d.store.Load()
+	_, err := d.store.Load(ctx)
 	return err
 }
 

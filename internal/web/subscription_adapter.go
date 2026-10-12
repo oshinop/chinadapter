@@ -7,8 +7,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
 
-// NewSubscriptionAdapter exposes the state-backed subscription service through
-// the browser-safe subscription interface.
+// NewSubscriptionAdapter exposes the immutable subscription catalog to web.
 func NewSubscriptionAdapter(service *subscription.Service) SubscriptionService {
 	if service == nil {
 		return nil
@@ -26,10 +25,7 @@ func (a subscriptionAdapter) Metadata(context.Context) (SubscriptionMetadata, er
 	return SubscriptionMetadata{Active: metadata.Active, NodeCount: metadata.NodeCount}, nil
 }
 
-func (a subscriptionAdapter) SubscriptionURL(_ context.Context, baseURL, socksAddress string) (SubscriptionURL, error) {
-	if err := a.service.SetSocksAddress(socksAddress); err != nil {
-		return SubscriptionURL{}, err
-	}
+func (a subscriptionAdapter) SubscriptionURL(_ context.Context, baseURL, _ string) (SubscriptionURL, error) {
 	url, err := a.service.SubscriptionURL(baseURL)
 	if err != nil {
 		return SubscriptionURL{}, err
@@ -37,6 +33,6 @@ func (a subscriptionAdapter) SubscriptionURL(_ context.Context, baseURL, socksAd
 	return SubscriptionURL{URL: url}, nil
 }
 
-func (a subscriptionAdapter) ServeSubscription(w http.ResponseWriter, r *http.Request, binding, socksAddress string) {
-	a.service.ServeSubscriptionAt(w, r, binding, socksAddress)
+func (a subscriptionAdapter) ServeSubscription(w http.ResponseWriter, r *http.Request, _, socksAddress string) {
+	a.service.HandleSubscription(w, r, socksAddress)
 }

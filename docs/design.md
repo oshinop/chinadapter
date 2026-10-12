@@ -1,14 +1,14 @@
 # kfadapter design
 
 **Audience:** Implementers, security reviewers, and operators  
-**Scope:** A provider-extensible containerized local SOCKS5 adapter, browser control plane, and stable account-bound subscription service; the registered providers are KuaiFan and QuickFox.
+**Scope:** A provider-extensible containerized local SOCKS5 adapter, browser control plane, and stable installation-bound subscription service; the registered providers are KuaiFan and QuickFox.
 
 ## 1. Decision summary
 
 | Area | Decision |
 |---|---|
 | Adapter interface | Expose one authenticated SOCKS5 listener. Each logical node is represented by a credential-bearing `socks5://` URI. |
-| Subscription interface | Serve a Base64-encoded, newline-delimited list of SOCKS5 URIs at one stable, account-bound path. External consumers fetch that path on their own schedule. |
+| Subscription interface | Render a Base64-encoded, newline-delimited list of SOCKS5 URIs at one installation-bound UUIDv8 path. External consumers fetch that path on their own schedule. |
 | Control plane | Serve the local UI and JSON API from the Go daemon. A local access token protects the browser session; provider login credentials remain transient, while validated provider session authority is retained in protected SQLite until explicit provider logout. |
 | Data plane | Dispatch KuaiFan nodes through the observed Fanster-branded `WIFIIN` TCP and UDP-over-TCP framing, and QuickFox nodes through its observed native XOR-framed TCP proxy. |
 | Deployment | Run production with the host network so OpenWrt LAN addresses and ephemeral UDP association ports are directly reachable. The portable developer Compose uses bridge publishing and therefore supports TCP only from outside its container network. |
@@ -37,7 +37,7 @@ The external consumer remains outside the adapter trust boundary. It fetches the
 2. Maintain complete, immutable session and node snapshots; retain valid runtime data across temporary control-plane outages and daemon recreation.
 3. Provide a local, browser-authenticated management UI and API whose unexpired opaque sessions survive daemon recreation.
 4. Provide selector-authenticated SOCKS5 `CONNECT` and `UDP ASSOCIATE` for eligible nodes.
-5. Publish one stable subscription URL for the current composite provider-account set.
+5. Publish one subscription URL whose credentials survive provider login/logout, account swaps, catalog changes, and restarts; only an access-token change rotates them.
 6. Preserve confidentiality of account, session, selector, proxy-authentication, and local access-token material.
 7. Fail closed for unsupported SOCKS commands, fragmented UDP, and unverified UDP address forms.
 
@@ -47,7 +47,7 @@ The external consumer remains outside the adapter trust boundary. It fetches the
 - Promising compatibility with a consumer that does not accept Base64-encoded newline-delimited SOCKS5 URIs.
 - Exposing the UI, SOCKS listener, or subscription endpoint to the LAN by default.
 - Persisting raw local access tokens, provider login accounts or passwords, or relay state.
-- Providing a local access-token reset facility.
+- Providing an unauthenticated local access-token reset facility.
 - Claiming that the legacy tunnel provides modern authenticated encryption.
 - Resolving SOCKS UDP domain destinations directly or claiming IPv6 UDP support; observed WIFIIN nodes accept only IPv4 UOT destination frames.
 
@@ -55,42 +55,47 @@ The external consumer remains outside the adapter trust boundary. It fetches the
 
 The daemon maintains three related state domains:
 
-- **Runtime state** is an immutable aggregate of provider-keyed snapshots, each containing one browser-safe account view, opaque refresh state, protocol authorities, and nodes. Each provider login or refresh commits independently after structural validation. A provider snapshot is removed only by explicit logout, never by elapsed time or a refresh failure; probe-only health updates remain process-local.
-- **Browser access state** contains a verifier for each opaque cookie token, its CSRF material, and expiry. Login attempts and throttling reservations remain process-local.
-- **Subscription authority** contains the current selector and proxy-authentication keys, account binding, and rendered body.
+- **Provider catalog** is an immutable aggregate of provider-keyed snapshots containing browser-safe account views, opaque refresh state, transport authorities, nodes, and expiry hints. Provider mutations preserve the other providers. Probe-only health updates remain process-local.
+- **Browser access state** contains `sha256(cookieToken)`, unchanged CSRF material, and expiry. Raw cookie tokens are never persisted. Login attempts and throttling reservations remain process-local.
+- **Installation identity** derives subscription and SOCKS credentials from the installation ID and the local access-token verifier. Provider identities and display labels never participate. No separate binding keys, account-scoped selector keys, or rendered subscription body are stored.
 
-Persisted state is sensitive. `state.db` is a normalized SQLite database with a fixed, closed relational schema. The store checks a non-symlinked, current-UID-owned `0700` directory and a regular, non-symlinked, current-UID-owned `0600` database with exactly one link. On first run, `LoadOrCreate` creates `state.db` directly and initializes a valid empty aggregate and the fixed schema in one transaction. Aggregate replacement and browser-session changes use transactions; SQLite enables foreign keys, uses a bounded busy timeout, secure deletion, rollback-journal `DELETE` mode, and `synchronous=FULL`, so an offline backup consists of one database file. Existing databases must pass file-identity, integrity, foreign-key, exact-table-and-schema, row-bound, and aggregate validation. An unknown or unsupported schema fails closed rather than being converted or accepted.
+Schema v9 contains exactly `schema_version`, `state_metadata`, `access_token_verifier`, `preferences`, `excluded_node_ids`, `active_session`, `active_session_providers`, `active_session_authorities`, `active_session_nodes`, and `browser_sessions`. `InstallationID`, refresh policy, exclusions, provider account/refresh/authority/node rows, expiry hints, and the Argon2id verifier remain durable. Live username maps are rebuilt from the catalog and identity.
+
+The store requires a non-symlinked, current-UID-owned `0700` directory and a regular, non-symlinked, current-UID-owned `0600` database with exactly one link. Initial creation and aggregate replacement are transactional. SQLite uses `_txlock=immediate`, foreign keys, a bounded busy timeout, secure deletion, rollback-journal `DELETE` mode, and `synchronous=FULL`. Every store operation accepts a context and uses context-aware SQL. Integrity checking runs only when opening a database; `Load` never prunes or writes state. The single aggregate write path validates its input and uses prepared statements for bulk inserts. `ErrStateBusy` distinguishes SQLite busy contention from corruption. An injected clock controls browser-session lifecycle; eviction retains the latest expiry dates first (`expires_at_ns DESC`) and removes the oldest excess rows.
 
 `AccessTokenVerifier` persists Argon2id salt, parameters, and a 32-byte derived hash. The supplied access token is trimmed, validated, used transiently for setup or login, and never written to state, logs, browser storage, or diagnostics. Provider login accounts and passwords are likewise transient. Each validated provider snapshot deliberately persists its canonical user ID, opaque refresh state, opaque tunnel authorities, redacted account summary, nodes, and `ExpiresAt` inside the protected database so daemon or container recreation does not force another provider login. `ExpiresAt` is only a staleness hint, not a deletion deadline or tunnel-admission condition. Each linked provider has its own refresh supervisor: the normal due time is the earlier of last success plus the refresh policy and `ExpiresAt` minus a 30-minute safety margin. Startup refreshes stale snapshots immediately without deleting them, and each one-minute tick rechecks the wall clock so suspension cannot skip work. Transient failures preserve the last-good snapshot and retry indefinitely with exponential backoff from one minute to a 30-minute maximum and ±20% jitter (clamped to that maximum). Explicit upstream `ErrSessionRejected` marks only that provider `needs_relogin`, retains its nodes and authority, and suspends automatic attempts until a manual refresh or login succeeds. If token rotation succeeds but the catalog fails, the coordinator durably merges only the returned `RefreshState` into the previous snapshot before returning the error.
 
-For the complete active provider-account set, the daemon sorts stable provider IDs and calculates:
+`internal/identity` calculates the installation key and the two domain-separated UUIDs:
 
 ```text
-compositeIdentity = concat(
-  decimalByteLength(providerID) || ":" || providerID ||
-  decimalByteLength(canonicalUserID) || ":" || canonicalUserID
-)
-
-HMAC-SHA256(
-  key = AccessTokenVerifier.derivedHash,
-  message = "kfadapter/subscription-account/v2\x00" || compositeIdentity,
-)
+instanceKey = HMAC-SHA256(AccessTokenVerifier.derivedHash,
+                        "kfadapter/instance/v3\x00" || InstallationID)
+subscriptionID = UUIDv8(HMAC-SHA256(instanceKey, "kfadapter/subscription/v3")[:16])
+socksPassword = UUIDv8(HMAC-SHA256(instanceKey, "kfadapter/socks-password/v3")[:16])
+nodeKey = provider || "\x00" || protocol || "\x00" || canonicalHost || "\x00" || decimalPort
+nodeID = provider || "_" || base64url(SHA256(nodeKey)[:12])
+socksUsername = "n_" || base64url(HMAC-SHA256(instanceKey,
+                    "kfadapter/socks-user/v3\x00" || nodeKey)[:12])
 ```
 
-The 32-byte result is `SubscriptionAuthority.AccountBinding`. Its unpadded Base64url representation is exactly 43 characters and is the account-bound token in the subscription path. Length-prefixing prevents ambiguous account tuples; sorting makes map order irrelevant. The binding is non-reversible. Login accounts, passwords, and the local access token never persist; canonical provider user IDs exist only inside validated active provider snapshots.
+UUID construction uses the first 16 digest bytes, sets the version nibble to 8 and the RFC 9562 variant bits to `10`, and formats a lowercase canonical 36-character UUID. There is no usable installation key before token setup, so subscription and SOCKS authentication are unavailable. All nodes share the instance password; a node's username depends only on its transport route. Neither current transport consumes any further per-node routing fields: KuaiFan dials `NodeHost:NodePort` and decodes handshake material from opaque authority; QuickFox resolves `NodeHost`, dials `NodePort`, and builds its native prefaces from opaque authority and the requested destination. Model, weight, auto, group/region/line labels and catalog IDs are not transport routing inputs. Authority identity is checked separately when pinning a tunnel.
 
-A same-account refresh retains the path token, selector key, and proxy-authentication key while atomically replacing that provider's snapshot inside the aggregate. Adding, removing, or changing any provider account changes the composite identity and atomically rotates the binding and all selector/proxy credentials. Other provider snapshots remain active when one provider fails renewal, is rejected upstream, or logs out. Provider network I/O holds only a per-provider lock; final publication rebases concurrent provider or probe changes and validates the generation under a short shared mutation lock.
+Provider network I/O retains the existing per-provider lock; publication rebases concurrent provider and probe changes under a short mutation lock. Adding/removing a provider or changing its account never changes the installation identity. Removed nodes are omitted and cannot authenticate; when the same route returns its credentials work again. The subscription response path reads an atomically published catalog, renders a request-local authority, and never accesses SQLite or the mutation lock.
 Offline backup and restore use exactly one `state.db`. A backup is taken while the service is stopped and contains no journal files. Before committing a restore, the tooling validates file identity, SQLite integrity, the fixed schema, foreign keys, and semantic aggregate state; it rejects symlinks, hard links, special files, broad permissions, excess size, journals, unrelated entries, corrupt state, and unknown or unsupported schemas. The prior protected state directory is retained until the replacement is known good so recovery can roll back safely.
 
 The rendered subscription body, derived selector credentials, provider session authority, and browser session tokens are secrets. They must not appear in logs, metrics, diagnostics, browser history, browser storage, or routine API responses. The authenticated node-details endpoint derives one current local SOCKS profile on demand; the browser clears it when the details popover closes and the service never returns provider tunnel secrets.
+
+### Schema v9 release note
+
+Upgrading from v8 changes the subscription URL and SOCKS credentials once. Copy the new `/sub/<36-char-uuid>` URL into each external consumer after upgrading. Subsequent provider account changes no longer rotate credentials. The v8-to-v9 migration keeps both providers' accounts, refresh state, authorities and nodes because every `nodeKey` input is already persisted; neither provider requires re-login or a forced catalog refresh. It recomputes route-based node IDs, merges duplicate routes, remaps known excluded IDs and drops exclusions with no matching node. Existing raw browser-session tokens are hashed so their cookies remain valid. It removes `subscription_authority`, `active_session_selectors`, `last_good`, `last_good_nodes`, and the stored node selector column. The committed `internal/state/testdata/v8.db` fixture was created by the v8 store at HEAD `a25303b` in a temporary worktree before store changes and exercises this preservation contract. Historical v4–v7 migrations retain their existing renewable-authority cutovers before reaching v9.
 
 ### 3.1 Provider boundary
 
 `internal/provider` defines provider-neutral lifecycle, snapshot, node, authority, registry, and transport contracts. A driver owns one provider's login and refresh protocol and returns a complete `provider.Snapshot`; refresh state and authority bytes remain opaque outside the originating driver and matching transport. The coordinator serializes mutations, merges the changed provider snapshot with the other current providers, builds one collision-free selector map, and publishes the aggregate transactionally. Provider IDs select lifecycle drivers; protocol IDs independently select SOCKS transports.
 
-`internal/state`, `internal/subscription`, `internal/app`, `internal/web`, and `internal/socks` validate and route generic provider data only. They neither decode provider refresh state nor interpret authority bytes. A node must reference an authority in its own provider snapshot with the same protocol, and global node IDs must be unique. SQLite schema v8 stores provider rows, authority rows, provider nodes, and the aggregate selector map. The v7-to-v8 migration preserves access control, preferences, and browser sessions but clears renewable provider authority, account binding, selectors, and rendered subscription because historical provider node IDs and selector derivations are not safely convertible; users log in again.
+`internal/state`, `internal/identity`, `internal/subscription`, `internal/app`, `internal/web`, and `internal/socks` validate and route generic provider data only. They neither decode provider refresh state nor interpret authority bytes. A node references an authority in its own provider snapshot with the same protocol, and route-derived node IDs are globally unique. Schema v9 persists the normalized catalog but never derived usernames or rendered bodies.
 
-Provider node IDs are canonical, provider-specific identities: KuaiFan uses `kuaifan_` plus Base64url of the first 12 bytes of SHA-256 over `groupID\0canonicalHost\0decimalPort`; QuickFox uses `quickfox_` plus the same digest construction over `typeID\0regionID\0regionName\0poolID\0connectIP\0connectPort`. Display labels never participate in identity.
+Provider node IDs use the common `nodeKey` and SHA-256 construction above, prefixed by the provider ID. Hosts are canonical IP addresses or lowercase IDNA DNS names without a trailing dot. Protocols separate distinct transports at the same endpoint. Repeated routes collapse even when group, region, pool, or line labels differ; iOS remains preferred over Windows when KuaiFan profiles expose the same route.
 
 The provider-neutral account contract is `{Tier, SubscriptionActive, SubscriptionEndsAt}`. `Tier` is a nonempty provider-defined display label. An active subscription requires an exact nonzero expiration; an inactive/free account has no expiration. Drivers normalize expired or incomplete paid metadata to their free tier unless the provider response claims currently paid access without the exact expiration required to authorize it, which is rejected. The status API and browser render the tier verbatim, show the expiration only while active, and never infer provider semantics from the label.
 
@@ -102,7 +107,7 @@ All KuaiFan-specific control, fingerprint, encryption, refresh coordination, and
 
 The KuaiFan driver runs two immutable control clients: the captured iOS 4.18.4 profile and the recovered Windows 4.3.30 profile. Both reuse hardened HTTPS transport, bounded control codecs, line normalization, and catalog merge; their fingerprints, request schemas, refresh rules, authority parsing, and provider extensions remain separate. Both branches must return the same provider user ID. The account tier is `VIP` only when both profiles report VIP and the earlier of their exact expirations is still in the future; otherwise it is `Standard`, inactive, and has no displayed expiration. Any failed branch leaves the prior complete provider snapshot current; no provisional session, authority, partial catalog, or mixed-generation node set is published.
 
-Catalog merge gives iOS priority for logical lines present in both profiles and appends Windows-only lines. The evidence snapshots produced a 169-line union: all 167 iOS lines plus two Windows-only lines. Each source profile validates its own line protocol and marks only verified WIFIIN rows eligible; ineligible rows are dropped before publication. Each retained node references its source profile's opaque authority, and the `kuaifan-wifiin` transport is the only component that decodes that authority. Logical IDs preserve distinct group entries while collapsing the same line returned by both clients. Localized tags compare case-insensitively with `_` and `-` equivalent. See [the protocol evidence report](kuaifan-ios-4.18.4-analysis.md) for request profiles, field-level evidence, inventory counts, and Fanster analysis limits.
+Catalog merge gives iOS priority for routes present in both profiles and appends Windows-only routes. Historical evidence reported a 169-line labeled union (167 iOS lines plus two Windows-only lines); v9 route identities additionally collapse shared endpoints across display groups. Each source profile validates its own line protocol and marks only verified WIFIIN rows eligible. Each retained node references its source profile's opaque authority, and only `kuaifan-wifiin` decodes that authority. Localized tags compare case-insensitively with `_` and `-` equivalent. See [the protocol evidence report](kuaifan-ios-4.18.4-analysis.md) for request profiles, field-level evidence, historical inventory counts, and Fanster analysis limits.
 
 ### 3.3 QuickFox transaction boundary
 
@@ -238,13 +243,14 @@ Open management through the configured numeric address or optional hostname, for
 
 On the first local visit, the UI obtains access status and asks the user to set and confirm an access token. The token is trimmed valid UTF-8 and must be 16 through 128 bytes after trimming. Setup is available exactly once. On later visits, an unauthenticated user enters the existing token to create a new local browser session; there is no reset API.
 
-Session cookies are `HttpOnly` and `SameSite`. Their opaque server-side cookie-token and CSRF records persist in `state.db` until expiry or explicit logout, so a browser remains authenticated after a daemon or container recreation. Startup validates and prunes expired or excess records before admitting them. The browser obtains CSRF material only through the authenticated status flow and sends it on mutations; users do not need to copy, place, or retain it manually.
+Session cookies are `HttpOnly` and `SameSite`. Their SHA-256 token hashes, CSRF records and expiry persist in `state.db`, so unexpired cookies survive recreation. Startup validates and prunes expired or excess records before admitting them. The browser obtains CSRF material through authenticated status and sends it on mutations. A successful access-token change invalidates every browser session, including event streams, and establishes a replacement session for its caller.
 
 | Endpoint | Access rule | Result |
 |---|---|---|
 | `GET /api/v1/access/status` | None | Non-cacheable `{initialized, authenticated, csrfToken?, expiresAt?}`; the optional fields are present only for an authenticated session. |
 | `POST /api/v1/access/setup` with `{token}` | Initial setup only | Valid first setup returns `201` and establishes a session; an already initialized installation returns `409`. |
 | `POST /api/v1/access/login` with `{token}` | Initialized installation | Valid token returns `200` and establishes a session; an invalid token receives the uniform `401`; a throttled attempt receives `429`. |
+| `POST /api/v1/access/token` with `{current, next}` | Session, CSRF and exact Origin | Argon2id-verifies `current`, requires a different valid `next`, persists a newly salted verifier, rotates subscription/SOCKS credentials, invalidates all browser sessions, and returns `200` with a replacement caller session. Current-token failures use the access-login throttle. |
 | `POST /api/v1/access/logout` | Authenticated session | Locks the console by clearing only the local browser session. |
 | `POST /api/v1/auth/logout` with `{provider}` | Authenticated session | Signs out only the named provider account while retaining local browser access and other providers. |
 | `POST /api/v1/auth/login` with `{provider, account, password}` | Authenticated session | Adds the named provider account and returns only its redacted account view; an already-linked provider rejects a second account. |
@@ -260,16 +266,16 @@ Session cookies are `HttpOnly` and `SameSite`. Their opaque server-side cookie-t
 
 Every API response is non-cacheable. Protected mutations require `Content-Type: application/json`, an exact same-origin `Origin`, the browser session cookie, and the `X-CSRF-Token` obtained from authenticated access status. Failures use `application/problem+json` with `{code, status, title, detail?}`. The browser must branch on `code`, not provider text. Probe codes are `probe_busy` (`429`), `node_not_found` (`404`), `node_ineligible` and `node_snapshot_unavailable` (`409`), `stale_probe` (`409`), `tcp_probe_timeout` (`504`), and `tcp_probe_failed` (`502`).
 
-`GET` or `HEAD /healthz` is the unauthenticated container liveness endpoint and returns only `ok` or `unhealthy`. It is not a control API. The external account-bound `GET /sub/<binding>` route is specified separately below and does not use a browser session.
+`GET` or `HEAD /healthz` is the unauthenticated container liveness endpoint and returns only `ok` or `unhealthy`. It is not a control API. The external installation-bound `GET /sub/<uuid>` route is specified separately below and does not use a browser session.
 
 
-After local access is established, the user signs in to one or more registered providers through the provider switcher. Exactly one account may be linked per provider; removing one provider retains local browser access and every other provider. The composite provider-account set establishes the binding described above. The UI presents the reusable URL for copying; it is not emitted at startup and must not be persisted in browser storage or history.
+After local access is established, users can link one account per provider. Removing a provider retains local browser access and all other providers. The installation-bound URL remains unchanged across account changes; the UI presents it for copying but never stores it in browser storage or history.
 
 ## 6. SOCKS5 adapter
 
 The SOCKS server supports method negotiation, RFC 1929 username/password authentication, and `CONNECT` with IPv4, IPv6, and domain targets. KuaiFan WIFIIN nodes additionally support `UDP ASSOCIATE` with IPv4 datagram destinations; QuickFox's recovered native relay is TCP-only. The server rejects `BIND` with SOCKS reply `0x07`. Fragmented, domain-targeted, and IPv6-targeted UDP datagrams are discarded rather than leaking into a direct fallback.
 
-A URI's username selects a canonical eligible node; its password authenticates that selector. Selectors are `HMAC(selectorKey, "selector\0" || NodeID)` and passwords remain derived from the selector. They do not expose an upstream host or tunnel key. Removed or changed node identities fail explicitly; an exact identity reappearance deterministically resumes its selector and never falls back to another upstream.
+A URI's username selects a canonical eligible route and its password authenticates the installation. SOCKS first looks up the username in an atomically swapped map built from the current snapshot, then compares the shared UUIDv8 password in constant time. Node resolution is indexed, never a linear scan on authentication. Removed routes fail explicitly; an exact route reappearance deterministically resumes its username without falling back to another upstream. Pin revalidation compares `nodeKey` and opaque authority identity, not display labels.
 
 For each `CONNECT`, the server authenticates and resolves a compact pin, checks registry-pointer identity, session, authority, and canonical eligible node before dial, establishes the observed upstream handshake, then checks the pin again before returning SOCKS success. An admitted relay keeps its compact pin and may drain across a later logout, refresh, or account change; it is never remapped. Elapsed time alone never refuses admission.
 
@@ -286,29 +292,31 @@ The observed data plane uses legacy AES-CFB and a legacy MD5-derived key schedul
 The sole external-consumer route is:
 
 ```http
-GET /sub/<43-char-account-binding>
+GET /sub/<36-char-uuid>
 ```
 
-The account-binding token is the Raw Base64url HMAC result described in [the state model](#3-trust-and-state-model). It is path-based to reduce accidental query-string logging. A malformed or invalid subscription path returns an empty, non-cacheable `404 Not Found` without redirect. Paths and tokens are redacted before any logging or error formatting.
+The strict parser accepts only lowercase canonical UUIDv8 text with RFC 9562 variant `10`, exactly one path segment, and no escaped aliases or trailing slash. The path is sensitive and is never logged or included in errors. After acquiring a bounded response slot, the handler validates the strict path, compares its UUID in constant time, loads the immutable catalog atomically and renders. It has no mutation, database write or global request lock.
 
-Optional query filters restrict the rendered list without changing the account-bound path: `provider` is an exact registered provider ID, `group` is an exact node group, and `name` is a case-insensitive node-name substring. Parameters may be combined. Omitting all three returns every eligible node from every linked provider; duplicate parameters, empty values, unknown providers, or filters that match no eligible node return the same empty `404` contract.
+Malformed, revoked or unknown paths, unsupported methods, and empty selections return an empty non-cacheable `404` without redirect. Saturation is checked before path validation and returns the uniform empty `503` with `Retry-After: 1`, for valid and invalid paths alike. Optional `provider`, exact `group`, and case-insensitive `name` filters affect only presentation; duplicate parameters, empty values and unknown providers return the same empty `404`.
 
-A successful response is the standard padded Base64 encoding of the complete newline-delimited `socks5://` URI list. The logical content is deterministically sorted and generated with URL-library escaping. A representative logical body is:
+Success is standard padded Base64 of deterministically sorted, newline-delimited URI text, generated with URL-library escaping:
 
 ```text
-socks5://selector:password@127.0.0.1:10808#Node%2001
-socks5://selector-2:password-2@127.0.0.1:10808#Node%2002
+socks5://n_<route-user>:<shared-instance-uuid-password>@127.0.0.1:10808#Node%2001
+socks5://n_<other-user>:<shared-instance-uuid-password>@127.0.0.1:10808#Node%2002
 ```
 
-The URI authority uses the configured hostname when the subscription request used it; otherwise it uses the configured specific IP or the validated numeric Host that reached a wildcard listener, always with `proxy.port`. The endpoint returns `Cache-Control: no-store`; `304 Not Modified` is not used. The service bounds concurrent subscription responses and rendered-body size. Before path validation, saturation returns a uniform empty `503 Service Unavailable` with `Retry-After: 1` for both valid and invalid requests.
+The URI authority uses the configured hostname when the request used it; otherwise it uses the configured specific IP or validated numeric wildcard Host, with `proxy.port`. Advertisement remains request-local, so simultaneous requests with different Host headers never contaminate one another. Responses use `Cache-Control: no-store`; neither `304` nor persisted rendered-body caching is used.
 
-### 7.2 Stable URL and consumer polling
+### 7.2 Stability and token rotation
 
-The URL remains reusable while the same composite provider-account set is active. Same-account refreshes may change subscription content without changing the path or selector/proxy credentials. Adding or removing a provider account creates a new binding and fresh selector/proxy credentials atomically; the former path returns the uniform empty `404`, and old SOCKS credentials become unusable. Replacing an account requires removing the existing provider account before adding the new one. Copy the new URL after such a provider-account change. The optional external syntax example is [`deploy/dae/config.dae.template`](../deploy/dae/config.dae.template).
+The URL, shared password and every route's username remain byte-identical across logout/login, account swaps, provider addition/removal, store reopen, and refreshes that change labels. Absent nodes are omitted and stop authenticating; their credentials work again when they return. Provider authority changes retain local credentials but invalidate a not-yet-admitted stale pin. Already admitted relays keep their compact pin and may drain without remapping.
+
+Only authenticated `POST /api/v1/access/token` rotates the identity. A newly salted verifier changes the instance key, URL, usernames and shared password. The old URL immediately receives the uniform empty `404`, and the old password is rejected even with a new username. Every browser session is revoked and the caller receives a replacement session. A rejected current token is throttled by the existing access throttle; an invalid or unchanged next token is a separate `400` and is not counted as a current-token failure. There is no unauthenticated reset. Copy the replacement URL to external consumers after a token change; [`deploy/dae/config.dae.template`](../deploy/dae/config.dae.template) uses the UUID placeholder.
 
 ## 8. Security and observability
 
-- Access-token verifier data, account bindings, selector keys, proxy-authentication keys, rendered bodies, passwords, account identifiers, session tokens, and provider secrets are redacted from logs, metrics, diagnostics, and routine APIs.
+- Access-token verifier data, instance keys, subscription UUIDs, usernames, rendered bodies, passwords, account identifiers, session tokens, and provider secrets are redacted from logs, metrics, diagnostics, and routine APIs.
 - Credentials and subscription-path tokens are never accepted through query parameters.
 - Browser security uses a restrictive CSP, frame denial, exact host/origin handling, same-origin checks, CSRF protection, and no external frontend assets.
 - Request bodies, control responses, rendered subscriptions, and response writers are bounded.
@@ -326,10 +334,13 @@ Focused verification must cover observable behavior, including:
 4. Raw local access tokens and provider login accounts/passwords never appear in persistent state, diagnostics, logs, or routine API responses. SQLite retains the Argon2id verifier; active provider session authority remains durable until explicit provider logout.
 5. An offline restore accepts exactly one current `state.db` only after file-identity, SQLite integrity, fixed-schema, foreign-key, and semantic aggregate validation. Corrupt state, a malformed or unsupported schema, and every rejected file form fail closed without committing the replacement.
 6. Every structurally valid provider snapshot, its nodes, and selector map remain available after daemon and container recreation, even when its staleness hint has passed; browser sessions retain their separate expiry contract. Stale snapshots refresh immediately at startup. Rejection of one provider for 72 hours must not affect another provider's schedule or credentials. Transient failures for 48 hours must retain the snapshot, retry with no delay above 30 minutes, and recover on the first success. A partial refresh must persist a rotated token for the next attempt. Only explicit provider logout removes a snapshot; elapsed time never deletes authority or refuses a new tunnel.
-7. The stable URL remains unchanged across same-account refreshes. Any addition or removal in the composite provider-account set rotates the binding and SOCKS credentials atomically; the former path returns the empty not-found contract.
-8. Valid paths return the exact Base64 body; malformed and invalid paths return the empty not-found contract. A consumer can fetch updated content at the same URL without any adapter-side consumer orchestration.
+7. A stability table checks URL, rendered credentials and node-details credentials across logout/login, account swaps, provider add/remove, store reopen and label-only refresh. Only access-token change rotates them; the old URL receives an empty `404`, the old SOCKS password is rejected, and the new URL/password and replacement browser session work.
+8. Strict UUIDv8 paths return the exact Base64 body; malformed and revoked paths return the empty not-found contract. Saturation precedes path validation. Fifty concurrent subscriptions across three Host headers each render their own authority without a data race, database write or request-global mutation.
 9. SOCKS authenticates the selector, rejects unsupported commands, dispatches eligible `CONNECT` requests through the selected KuaiFan WIFIIN or QuickFox native TCP transport, relays KuaiFan IPv4 `UDP ASSOCIATE` through the observed WIFIIN UOT transport, discards fragmented and unsupported-address UDP datagrams, preserves pre-admission pin checks, and never remaps an admitted flow.
 10. Production and developer Compose declare the managed logical `db_data` volume, mounted at `/kfadapter/data`, with no external or custom-name override. Under the fixed `kfadapter` production project it resolves to `kfadapter_db_data`; under `kfadapter-local` it resolves to `kfadapter-local_db_data`. Both preserve `state.db` across container recreation while remaining non-root and read-only outside documented writable mounts. `docker compose down -v` deletes that project's managed volume and its persisted provider and browser sessions; plain `down` does not.
+11. The real v8 fixture migrates to exact schema v9 with both provider accounts, refresh state and authorities retained, route IDs and exclusions remapped, browser cookie hashes matching the original raw tokens, and no re-login. Store tests cover context cancellation, read-only Load, busy errors, oldest-first session eviction and verifier-change revocation.
+12. Release gates are clean `gofmt -l cmd internal`, `go vet ./...`, `golangci-lint run ./...`, `go test -race -count=1 ./...`, and `npm ci && npm run build && npm test` in `web`. State scripts contain no schema/table constants: isolated `validate-state` enforces v9. With no Python script test suite, run `python3 -m py_compile` on the four helpers and report that the archive round-trip was not executed.
+
 
 ## 10. References
 

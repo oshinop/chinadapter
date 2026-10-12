@@ -2,7 +2,9 @@ package web
 
 import (
 	"bytes"
+	"context"
 	"crypto/rand"
+	"crypto/sha256"
 	"crypto/subtle"
 	"encoding/base64"
 	"encoding/json"
@@ -74,6 +76,7 @@ type sessionStore struct {
 	random         io.Reader
 	ttl            time.Duration
 	max            int
+	generation     uint64
 }
 
 func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, max int, persistence BrowserSessionPersistence) (*sessionStore, error) {
@@ -104,8 +107,8 @@ func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, 
 		return store, nil
 	}
 	restoredAt := now().UTC()
-	if err := persistence.RestoreBrowserSessions(restoredAt, max, func(token, csrf string, expiresAt time.Time) error {
-		return store.restore(restoredAt, token, csrf, expiresAt)
+	if err := persistence.RestoreBrowserSessions(context.Background(), restoredAt, max, func(tokenHash []byte, csrf string, expiresAt time.Time) error {
+		return store.restore(restoredAt, string(tokenHash), csrf, expiresAt)
 	}); err != nil {
 		return nil, err
 	}
@@ -113,7 +116,7 @@ func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, 
 }
 
 func (s *sessionStore) restore(now time.Time, token, csrf string, expiresAt time.Time) error {
-	if !validBrowserSessionSecret(token) || !validBrowserSessionSecret(csrf) || !now.Before(expiresAt) || expiresAt.After(now.Add(s.ttl)) {
+	if len(token) != sha256.Size || !validBrowserSessionSecret(csrf) || !now.Before(expiresAt) || expiresAt.After(now.Add(s.ttl)) {
 		return errors.New("invalid persisted browser session")
 	}
 	s.mu.Lock()
@@ -128,7 +131,7 @@ func (s *sessionStore) restore(now time.Time, token, csrf string, expiresAt time
 	return nil
 }
 
-func (s *sessionStore) create() (string, browserSession, error) {
+func (s *sessionStore) create(ctx context.Context) (string, browserSession, error) {
 	// Entropy reads are deliberately outside s.mu: a blocked entropy source must
 	// not prevent a concurrent access request from observing its admission.
 	for range 4 {
@@ -141,43 +144,45 @@ func (s *sessionStore) create() (string, browserSession, error) {
 			return "", browserSession{}, err
 		}
 		session := browserSession{csrf: csrf, expiresAt: s.now().UTC().Add(s.ttl), done: make(chan struct{})}
+		key := sessionKey(token)
 
 		s.mu.Lock()
 		expired := s.pruneLocked()
+		generation := s.generation
 		if len(s.sessions)+len(s.pending) >= s.max {
 			s.mu.Unlock()
-			s.deleteBrowserSessions(expired)
+			s.deleteBrowserSessions(ctx, expired)
 			return "", browserSession{}, errors.New("browser session limit reached")
 		}
-		if _, collision := s.sessions[token]; collision {
+		if _, collision := s.sessions[key]; collision {
 			s.mu.Unlock()
-			s.deleteBrowserSessions(expired)
+			s.deleteBrowserSessions(ctx, expired)
 			continue
 		}
-		if _, collision := s.pending[token]; collision {
+		if _, collision := s.pending[key]; collision {
 			s.mu.Unlock()
-			s.deleteBrowserSessions(expired)
+			s.deleteBrowserSessions(ctx, expired)
 			continue
 		}
-		s.pending[token] = struct{}{}
+		s.pending[key] = struct{}{}
 		s.mu.Unlock()
-		s.deleteBrowserSessions(expired)
+		s.deleteBrowserSessions(ctx, expired)
 
 		if s.persistence != nil {
-			err = s.persistence.SaveBrowserSession(token, csrf, session.expiresAt, s.max)
+			err = s.persistence.SaveBrowserSession(ctx, token, csrf, session.expiresAt, s.max)
 		}
 		s.mu.Lock()
-		delete(s.pending, token)
-		usable := err == nil && s.now().Before(session.expiresAt)
+		delete(s.pending, key)
+		usable := err == nil && generation == s.generation && s.now().Before(session.expiresAt)
 		if usable {
-			s.sessions[token] = session
+			s.sessions[key] = session
 		}
 		s.mu.Unlock()
 		if err != nil {
 			return "", browserSession{}, err
 		}
 		if !usable {
-			s.deleteBrowserSessions([]string{token})
+			s.deleteBrowserSessions(ctx, []string{key})
 			return "", browserSession{}, errors.New("browser session expired before persistence")
 		}
 		return token, session, nil
@@ -185,10 +190,11 @@ func (s *sessionStore) create() (string, browserSession, error) {
 	return "", browserSession{}, errors.New("browser session token collision")
 }
 
-func (s *sessionStore) valid(token string) (browserSession, bool) {
+func (s *sessionStore) valid(ctx context.Context, token string) (browserSession, bool) {
 	if token == "" {
 		return browserSession{}, false
 	}
+	token = sessionKey(token)
 	s.mu.Lock()
 	session, ok := s.sessions[token]
 	expired := ok && !s.now().Before(session.expiresAt)
@@ -198,7 +204,7 @@ func (s *sessionStore) valid(token string) (browserSession, bool) {
 		}
 		s.mu.Unlock()
 		if expired {
-			s.deleteBrowserSessions([]string{token})
+			s.deleteBrowserSessions(ctx, []string{token})
 		}
 		return browserSession{}, false
 	}
@@ -206,12 +212,13 @@ func (s *sessionStore) valid(token string) (browserSession, bool) {
 	return session, true
 }
 
-func (s *sessionStore) revoke(token string) error {
+func (s *sessionStore) revoke(ctx context.Context, token string) error {
 	if token == "" {
 		return nil
 	}
+	token = sessionKey(token)
 	if s.persistence != nil {
-		if err := s.persistence.DeleteBrowserSession(token); err != nil {
+		if err := s.persistence.DeleteBrowserSession(ctx, []byte(token)); err != nil {
 			return err
 		}
 	}
@@ -221,23 +228,24 @@ func (s *sessionStore) revoke(token string) error {
 	return nil
 }
 
-func (s *sessionStore) deleteBrowserSessions(tokens []string) {
+func (s *sessionStore) deleteBrowserSessions(ctx context.Context, tokens []string) {
 	if s.persistence == nil {
 		return
 	}
 	for _, token := range tokens {
 		if token != "" {
-			_ = s.persistence.DeleteBrowserSession(token)
+			_ = s.persistence.DeleteBrowserSession(ctx, []byte(token))
 		}
 	}
 }
 
 // matches verifies that the exact session which started a stream remains
 // active. It also closes the session done signal at expiry.
-func (s *sessionStore) matches(token string, expected browserSession) bool {
+func (s *sessionStore) matches(ctx context.Context, token string, expected browserSession) bool {
 	if token == "" || expected.done == nil {
 		return false
 	}
+	token = sessionKey(token)
 	s.mu.Lock()
 	session, ok := s.sessions[token]
 	expired := ok && !s.now().Before(session.expiresAt)
@@ -247,9 +255,29 @@ func (s *sessionStore) matches(token string, expected browserSession) bool {
 	}
 	s.mu.Unlock()
 	if expired {
-		s.deleteBrowserSessions([]string{token})
+		s.deleteBrowserSessions(ctx, []string{token})
 	}
 	return matches
+}
+
+func sessionKey(token string) string {
+	hash := sha256.Sum256([]byte(token))
+	return string(hash[:])
+}
+
+func (s *sessionStore) revokeAll(ctx context.Context) error {
+	s.mu.Lock()
+	s.generation++
+	for key := range s.sessions {
+		s.removeSessionLocked(key)
+	}
+	clear(s.pending)
+	clear(s.loginAttempts)
+	s.mu.Unlock()
+	if s.persistence != nil {
+		return s.persistence.DeleteAllBrowserSessions(ctx)
+	}
+	return nil
 }
 
 func (s *sessionStore) removeSessionLocked(token string) {
@@ -322,19 +350,20 @@ func (s *sessionStore) finishAccess(client string, successful, countedFailure bo
 // beginLogin atomically checks the per-session failure window and reserves the
 // only backend login slot for that browser session. Concurrent attempts never
 // reach the backend and do not count as credential failures.
-func (s *sessionStore) beginLogin(token string) (loginAdmission, time.Duration) {
+func (s *sessionStore) beginLogin(ctx context.Context, token string) (loginAdmission, time.Duration) {
+	token = sessionKey(token)
 	s.mu.Lock()
 	expired := s.pruneLocked()
 	if _, active := s.sessions[token]; !active {
 		s.mu.Unlock()
-		s.deleteBrowserSessions(expired)
+		s.deleteBrowserSessions(ctx, expired)
 		return loginSessionInactive, 0
 	}
 	now := s.now()
 	attempt := s.loginAttempts[token]
 	if attempt.inFlight {
 		s.mu.Unlock()
-		s.deleteBrowserSessions(expired)
+		s.deleteBrowserSessions(ctx, expired)
 		return loginBusy, 0
 	}
 	if !attempt.windowEnd.IsZero() && !now.Before(attempt.windowEnd) {
@@ -342,19 +371,20 @@ func (s *sessionStore) beginLogin(token string) (loginAdmission, time.Duration) 
 	}
 	if attempt.failures >= 5 {
 		s.mu.Unlock()
-		s.deleteBrowserSessions(expired)
+		s.deleteBrowserSessions(ctx, expired)
 		return loginRateLimited, attempt.windowEnd.Sub(now)
 	}
 	attempt.inFlight = true
 	s.loginAttempts[token] = attempt
 	s.mu.Unlock()
-	s.deleteBrowserSessions(expired)
+	s.deleteBrowserSessions(ctx, expired)
 	return loginAdmitted, 0
 }
 
 // finishLogin releases a prior login reservation exactly once. It never
 // recreates login state for a session that logout or expiry removed in flight.
-func (s *sessionStore) finishLogin(token string, successful, countedFailure bool) {
+func (s *sessionStore) finishLogin(ctx context.Context, token string, successful, countedFailure bool) {
+	token = sessionKey(token)
 	s.mu.Lock()
 	session, active := s.sessions[token]
 	if !active {
@@ -365,7 +395,7 @@ func (s *sessionStore) finishLogin(token string, successful, countedFailure bool
 	if !s.now().Before(session.expiresAt) {
 		s.removeSessionLocked(token)
 		s.mu.Unlock()
-		s.deleteBrowserSessions([]string{token})
+		s.deleteBrowserSessions(ctx, []string{token})
 		return
 	}
 	attempt, reserved := s.loginAttempts[token]

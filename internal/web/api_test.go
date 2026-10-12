@@ -4,7 +4,6 @@ import (
 	"bytes"
 	"context"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -94,6 +93,19 @@ func (f *fakeBackend) AccessLogin(_ context.Context, token string) error {
 	return nil
 }
 
+func (f *fakeBackend) AccessChangeToken(_ context.Context, current, next string) error {
+	f.mu.Lock()
+	defer f.mu.Unlock()
+	if !f.accessInitialized || subtle.ConstantTimeCompare([]byte(f.accessToken), []byte(current)) != 1 {
+		return publicError{status: http.StatusUnauthorized}
+	}
+	if !validAccessToken(next) || current == next {
+		return publicError{status: http.StatusBadRequest}
+	}
+	f.accessToken = next
+	return nil
+}
+
 func (f *fakeBackend) Status(context.Context) (Status, error) {
 	return Status{State: "ready", Providers: []string{"kuaifan"}, Accounts: map[string]Account{"kuaifan": {Provider: "kuaifan", Display: "person@example.com", Tier: "Standard"}}}, nil
 }
@@ -167,7 +179,7 @@ type fakeSubscriptions struct {
 
 func newFakeSubscriptions() *fakeSubscriptions {
 	return &fakeSubscriptions{
-		binding:  base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32)),
+		binding:  "07112233-4455-8677-8899-aabbccddeeff",
 		metadata: SubscriptionMetadata{Active: true, NodeCount: 1},
 	}
 }

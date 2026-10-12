@@ -5,7 +5,6 @@ package web
 
 import (
 	"context"
-	"encoding/base64"
 	"encoding/json"
 	"errors"
 	"fmt"
@@ -17,10 +16,12 @@ import (
 	"path"
 	"strconv"
 	"strings"
+	"sync"
 	"time"
 	"unicode/utf8"
 
 	"github.com/kfadapter/kfadapter/internal/endpoint"
+	"github.com/kfadapter/kfadapter/internal/identity"
 )
 
 var (
@@ -64,9 +65,10 @@ type Config struct {
 // BrowserSessionPersistence stores only opaque browser-session and CSRF
 // secrets. It never receives provider credentials or local access tokens.
 type BrowserSessionPersistence interface {
-	RestoreBrowserSessions(now time.Time, max int, add func(token, csrf string, expiresAt time.Time) error) error
-	SaveBrowserSession(token, csrf string, expiresAt time.Time, max int) error
-	DeleteBrowserSession(token string) error
+	RestoreBrowserSessions(context.Context, time.Time, int, func(tokenHash []byte, csrf string, expiresAt time.Time) error) error
+	SaveBrowserSession(context.Context, string, string, time.Time, int) error
+	DeleteBrowserSession(context.Context, []byte) error
+	DeleteAllBrowserSessions(context.Context) error
 }
 
 // Dependencies are injected by cmd. Backend implementations normally adapt
@@ -90,6 +92,7 @@ type Backend interface {
 	AccessStatus(context.Context) (AccessStatus, error)
 	AccessSetup(context.Context, string) error
 	AccessLogin(context.Context, string) error
+	AccessChangeToken(context.Context, string, string) error
 	Status(context.Context) (Status, error)
 	Nodes(context.Context) ([]Node, error)
 	NodeDetails(context.Context, string) (NodeDetails, error)
@@ -240,6 +243,7 @@ type API struct {
 	socksPort     string
 	sessions      *sessionStore
 	sseSlots      chan struct{}
+	accessMu      sync.RWMutex
 }
 
 // NewAPI creates the browser handler for the configured listener.
@@ -323,8 +327,8 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if r.URL.Path == "/sub" || strings.HasPrefix(r.URL.Path, "/sub/") {
-		binding, ok := subscriptionPath(r.URL.Path)
-		if !ok || a.subscriptions == nil {
+		binding, _ := subscriptionPath(r.URL.EscapedPath())
+		if a.subscriptions == nil {
 			writeEmptyNotFound(w)
 			return
 		}
@@ -419,6 +423,8 @@ func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
 		a.accountLogout(w, r)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/logout":
 		a.lock(w, r, token)
+	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/token":
+		a.changeAccessToken(w, r, token, session)
 	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/control/refresh":
 		a.refresh(w, r)
 	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/subscription":
@@ -498,6 +504,8 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
 		return
 	}
+	a.accessMu.RLock()
+	defer a.accessMu.RUnlock()
 	var err error
 	if setup {
 		err = a.backend.AccessSetup(r.Context(), body.Token)
@@ -510,7 +518,7 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		return
 	}
 	successful = true
-	token, session, err := a.sessions.create()
+	token, session, err := a.sessions.create(r.Context())
 	if err != nil {
 		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
 		return
@@ -526,6 +534,74 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		CSRFToken     string    `json:"csrfToken"`
 		ExpiresAt     time.Time `json:"expiresAt"`
 	}{Initialized: true, Authenticated: true, CSRFToken: session.csrf, ExpiresAt: session.expiresAt})
+}
+
+func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token string, session browserSession) {
+	if a.backend == nil {
+		a.backendUnavailable(w)
+		return
+	}
+	var body struct {
+		Current string `json:"current"`
+		Next    string `json:"next"`
+	}
+	if err := readJSONBody(w, r, accessTokenLimit, &body); err != nil {
+		a.writeBodyError(w, err)
+		return
+	}
+	defer clearString(&body.Current)
+	defer clearString(&body.Next)
+	body.Current, body.Next = strings.TrimSpace(body.Current), strings.TrimSpace(body.Next)
+	client := clientIdentity(r.RemoteAddr)
+	admission, retry := a.sessions.beginAccess(client)
+	switch admission {
+	case accessBusy:
+		w.Header().Set("Retry-After", "1")
+		a.writeProblem(w, http.StatusTooManyRequests, "access_in_progress", "Access request in progress", "")
+		return
+	case accessRateLimited:
+		retryAfterHeader(w.Header(), retry)
+		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests", "")
+		return
+	case accessAdmitted:
+	}
+	successful, countedFailure := false, false
+	defer func() { a.sessions.finishAccess(client, successful, countedFailure) }()
+	if !validAccessToken(body.Current) {
+		countedFailure = true
+		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
+		return
+	}
+	// The write lock includes verifier rotation, revocation and the replacement
+	// caller session; concurrent access logins cannot mint an old-token session.
+	a.accessMu.Lock()
+	defer a.accessMu.Unlock()
+	if !a.sessions.matches(r.Context(), token, session) {
+		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
+		return
+	}
+	if err := a.backend.AccessChangeToken(r.Context(), body.Current, body.Next); err != nil {
+		countedFailure = accessFailureCounts(err)
+		a.writeAccessError(w, err)
+		return
+	}
+	successful = true
+	if err := a.sessions.revokeAll(r.Context()); err != nil {
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		return
+	}
+	newToken, newSession, err := a.sessions.create(r.Context())
+	if err != nil {
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		return
+	}
+	setSessionCookie(w, newToken, newSession.expiresAt)
+	a.writeJSON(w, http.StatusOK, struct {
+		Initialized   bool      `json:"initialized"`
+		Authenticated bool      `json:"authenticated"`
+		CSRFToken     string    `json:"csrfToken"`
+		ExpiresAt     time.Time `json:"expiresAt"`
+	}{Initialized: true, Authenticated: true, CSRFToken: newSession.csrf, ExpiresAt: newSession.expiresAt})
 }
 
 func (a *API) status(w http.ResponseWriter, r *http.Request) {
@@ -609,7 +685,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 		a.writeProblem(w, http.StatusBadRequest, "invalid_login", "Invalid login", "")
 		return
 	}
-	admission, retry := a.sessions.beginLogin(token)
+	admission, retry := a.sessions.beginLogin(r.Context(), token)
 	switch admission {
 	case loginBusy:
 		w.Header().Set("Retry-After", "1")
@@ -625,9 +701,10 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 	case loginAdmitted:
 		// Admitted requests continue below.
 	}
+	ctx := r.Context()
 	successful, countedFailure := false, false
-	defer func() { a.sessions.finishLogin(token, successful, countedFailure) }()
-	account, err := a.backend.Login(r.Context(), LoginInput{Provider: body.Provider, Account: body.Account, Password: body.Password})
+	defer func() { a.sessions.finishLogin(ctx, token, successful, countedFailure) }()
+	account, err := a.backend.Login(ctx, LoginInput{Provider: body.Provider, Account: body.Account, Password: body.Password})
 	if err != nil {
 		countedFailure = loginFailureCounts(err)
 		a.writeBackendError(w, err, "login_failed", http.StatusUnauthorized)
@@ -665,7 +742,7 @@ func (a *API) lock(w http.ResponseWriter, r *http.Request, token string) {
 		a.writeBodyError(w, err)
 		return
 	}
-	if err := a.revokeBrowserSession(token); err != nil {
+	if err := a.revokeBrowserSession(r.Context(), token); err != nil {
 		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
 		return
 	}
@@ -673,8 +750,8 @@ func (a *API) lock(w http.ResponseWriter, r *http.Request, token string) {
 	w.WriteHeader(http.StatusNoContent)
 }
 
-func (a *API) revokeBrowserSession(token string) error {
-	return a.sessions.revoke(token)
+func (a *API) revokeBrowserSession(ctx context.Context, token string) error {
+	return a.sessions.revoke(ctx, token)
 }
 
 func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
@@ -788,7 +865,7 @@ func (a *API) writeSSE(w http.ResponseWriter, flusher http.Flusher, payload stri
 }
 
 func (a *API) events(w http.ResponseWriter, r *http.Request, token string, session browserSession) {
-	if !a.sessions.matches(token, session) {
+	if !a.sessions.matches(r.Context(), token, session) {
 		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
 		return
 	}
@@ -838,7 +915,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request, token string, sessi
 		case <-session.done:
 			return
 		case <-sessionCheck.C:
-			if !a.sessions.matches(token, session) {
+			if !a.sessions.matches(r.Context(), token, session) {
 				return
 			}
 		case <-heartbeat.C:
@@ -849,7 +926,7 @@ func (a *API) events(w http.ResponseWriter, r *http.Request, token string, sessi
 			if !open {
 				return
 			}
-			if !a.sessions.matches(token, session) {
+			if !a.sessions.matches(r.Context(), token, session) {
 				return
 			}
 			if event.Type == "" || strings.ContainsAny(event.Type, "\r\n") {
@@ -871,7 +948,7 @@ func (a *API) authenticate(r *http.Request) (string, browserSession, bool) {
 	if err != nil {
 		return "", browserSession{}, false
 	}
-	session, ok := a.sessions.valid(cookie.Value)
+	session, ok := a.sessions.valid(r.Context(), cookie.Value)
 	return cookie.Value, session, ok
 }
 
@@ -931,6 +1008,9 @@ func (a *API) writeAccessError(w http.ResponseWriter, err error) {
 		switch public.HTTPStatus() {
 		case http.StatusConflict:
 			a.writeProblem(w, http.StatusConflict, "access_initialized", "Conflict", "")
+			return
+		case http.StatusBadRequest:
+			a.writeProblem(w, http.StatusBadRequest, "invalid_next_access_token", "Invalid next access token", "")
 			return
 		case http.StatusUnauthorized:
 			a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
@@ -1026,21 +1106,12 @@ func canonicalNumericAddress(hostport string) (netip.Addr, string, error) {
 }
 
 func subscriptionPath(requestPath string) (string, bool) {
-	parts := strings.Split(requestPath, "/")
-	if len(parts) != 3 || parts[0] != "" || parts[1] != "sub" || len(parts[2]) != 43 {
-		return "", false
-	}
-	binding, err := base64.RawURLEncoding.DecodeString(parts[2])
-	if err != nil || len(binding) != 32 || base64.RawURLEncoding.EncodeToString(binding) != parts[2] {
-		return "", false
-	}
-	clear(binding)
-	return parts[2], true
+	return identity.ParseSubscriptionPath(requestPath)
 }
 
 func knownAPIPath(requestPath string) bool {
 	switch requestPath {
-	case "/api/v1/status", "/api/v1/nodes", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/access/logout", "/api/v1/control/refresh", "/api/v1/subscription", "/api/v1/subscription/url", "/api/v1/events", "/api/v1/diagnostics/export":
+	case "/api/v1/status", "/api/v1/nodes", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/access/logout", "/api/v1/access/token", "/api/v1/control/refresh", "/api/v1/subscription", "/api/v1/subscription/url", "/api/v1/events", "/api/v1/diagnostics/export":
 		return true
 	}
 	return strings.HasPrefix(requestPath, "/api/v1/nodes/") && (strings.HasSuffix(requestPath, "/details") || strings.HasSuffix(requestPath, "/probe"))

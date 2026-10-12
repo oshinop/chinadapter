@@ -7,12 +7,12 @@ import (
 )
 
 func TestCanonicalNodeComparisonRejectsReplacement(t *testing.T) {
-	left := state.Node{ID: "quickfox_a", Provider: "quickfox", Host: "127.0.0.1", Port: 80, AuthorityID: "one"}
+	left := state.Node{ID: "quickfox_a", Provider: "quickfox", Protocol: "quickfox-native", Host: "127.0.0.1", Port: 80, AuthorityID: "one"}
 	if !sameCanonicalNode(left, left) {
 		t.Fatal("identical node rejected")
 	}
 	replaced := left
-	replaced.ID = "quickfox_b"
+	replaced.Host = "127.0.0.2"
 	if sameCanonicalNode(left, replaced) {
 		t.Fatal("replacement node accepted")
 	}

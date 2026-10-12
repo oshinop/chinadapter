@@ -2,62 +2,106 @@ package state
 
 import (
 	"bytes"
+	"context"
 	"database/sql"
+	"encoding/base64"
+	"errors"
 	"fmt"
 	"os"
 	"path/filepath"
 	"testing"
 	"time"
+
+	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
-func TestAccountBindingKeepsKeysForSameAccountAndRotatesOnCutover(t *testing.T) {
-	persistent, err := NewPersistentState()
+func TestV8FixtureMigrationPreservesProvidersAndSessions(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	data, err := os.ReadFile("testdata/v8.db")
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := persistent.SetAccessToken("correct horse battery token"); err != nil {
+	path := filepath.Join(directory, sqliteStateFileName)
+	if err := os.WriteFile(path, data, 0600); err != nil {
 		t.Fatal(err)
 	}
-	now := time.Now().UTC()
-	if rotated, err := EnsureSubscriptionAccountBinding(&persistent, "account-a", now); err != nil || rotated {
-		t.Fatalf("first bind = %v, %v", rotated, err)
-	}
-	selectorKey := append([]byte(nil), persistent.Subscription.SelectorKey...)
-	proxyKey := append([]byte(nil), persistent.Subscription.ProxyAuthKey...)
-	if rotated, err := EnsureSubscriptionAccountBinding(&persistent, "account-a", now.Add(time.Minute)); err != nil || rotated || !bytes.Equal(selectorKey, persistent.Subscription.SelectorKey) || !bytes.Equal(proxyKey, persistent.Subscription.ProxyAuthKey) {
-		t.Fatalf("same account changed keys: %v, %v", rotated, err)
-	}
-	if rotated, err := EnsureSubscriptionAccountBinding(&persistent, "account-b", now.Add(2*time.Minute)); err != nil || !rotated || bytes.Equal(selectorKey, persistent.Subscription.SelectorKey) || bytes.Equal(proxyKey, persistent.Subscription.ProxyAuthKey) {
-		t.Fatalf("cutover did not rotate both keys: %v, %v", rotated, err)
-	}
-}
-
-func TestV8StoreRoundTripHasLiveOnlySelectors(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewSQLiteStore(dir)
+	clock := time.Date(2026, 10, 12, 12, 0, 0, 0, time.UTC)
+	store, err := NewSQLiteStore(directory, WithClock(func() time.Time { return clock }))
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	persistent, err := store.LoadOrCreate()
+	defer store.Close(t.Context())
+	loaded, err := store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	if err := ValidatePersistentState(persistent); err != nil {
+	if loaded.InstallationID != "00112233445566778899aabbccddeeff" || !loaded.VerifyAccessToken("v8 fixture access token") || loaded.Preferences.RefreshPolicy != "1h" || !loaded.Preferences.RevealEndpoints {
+		t.Fatal("durable local authority or preferences lost")
+	}
+	if loaded.ActiveSession == nil || len(loaded.ActiveSession.Providers) != 2 || len(loaded.ActiveSession.Nodes) != 2 {
+		t.Fatal("migration requires provider re-login")
+	}
+	for _, id := range []provider.ID{"kuaifan", "quickfox"} {
+		snapshot, exists := loaded.ActiveSession.Providers[id]
+		if !exists || !snapshot.Valid() || snapshot.Account.UserID != string(id)+"-fixture-user" || len(snapshot.RefreshState) == 0 || len(snapshot.Authorities) != 1 {
+			t.Fatalf("provider %s not preserved", id)
+		}
+		if authority, exists := snapshot.Authorities["default"]; !exists || len(authority.Data) == 0 {
+			t.Fatal("tunnel authority lost")
+		}
+		expected, err := identity.NodeID(identity.Route{Provider: id, Protocol: snapshot.Nodes[0].Protocol, Host: snapshot.Nodes[0].Host, Port: snapshot.Nodes[0].Port})
+		if err != nil || snapshot.Nodes[0].ID != expected {
+			t.Fatal("node ID not remapped from persisted route")
+		}
+		if node, found := loaded.ActiveSession.NodeByID(expected); !found || node.Provider != id {
+			t.Fatal("loaded catalog node lookup not indexed")
+		}
+		if id == "kuaifan" && !loaded.Preferences.ExcludedNodeIDs[expected] {
+			t.Fatal("excluded ID not remapped")
+		}
+	}
+	if len(loaded.Preferences.ExcludedNodeIDs) != 1 {
+		t.Fatal("unmapped exclusion retained")
+	}
+	if len(loaded.ActiveSession.Selectors) != 2 {
+		t.Fatal("live credential map not rebuilt")
+	}
+	var version int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT version FROM schema_version WHERE id = 1").Scan(&version); err != nil || version != 9 {
+		t.Fatalf("schema version %d: %v", version, err)
+	}
+	if err := validateSQLiteSchema(t.Context(), store.db); err != nil {
 		t.Fatal(err)
 	}
-	if len(persistent.Subscription.SelectorKey) != 32 || len(persistent.Subscription.ProxyAuthKey) != 32 {
-		t.Fatalf("invalid fresh keys")
+	rawToken := "AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE"
+	expectedHash := BrowserSessionTokenHash(rawToken)
+	var hash []byte
+	var expires int64
+	if err := store.db.QueryRowContext(t.Context(), "SELECT token_hash, expires_at_ns FROM browser_sessions").Scan(&hash, &expires); err != nil {
+		t.Fatal(err)
+	}
+	if !bytes.Equal(hash, expectedHash[:]) {
+		t.Fatal("raw browser session token not hashed")
+	}
+	restored := false
+	if err := store.RestoreBrowserSessions(t.Context(), time.Unix(0, expires).Add(-time.Hour), 4096, func(hash []byte, csrf string, _ time.Time) error {
+		restored = bytes.Equal(hash, expectedHash[:]) && csrf == "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !restored {
+		t.Fatal("existing browser session invalidated")
 	}
 }
 
 func TestRuntimeGenerationRemainsMonotonic(t *testing.T) {
 	now := time.Now().UTC()
-	snapshot := &RuntimeSnapshot{Generation: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour)}
-	store, err := NewRuntimeStore(snapshot)
+	store, err := NewRuntimeStore(&RuntimeSnapshot{Generation: 1, CreatedAt: now, ExpiresAt: now.Add(time.Hour)})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,163 +110,205 @@ func TestRuntimeGenerationRemainsMonotonic(t *testing.T) {
 	}
 }
 
-func TestV7ToV8MigrationClearsRenewableAuthority(t *testing.T) {
-	dir := t.TempDir()
-	if err := os.Chmod(dir, 0o700); err != nil {
-		t.Fatal(err)
-	}
-	path := filepath.Join(dir, sqliteStateFileName)
-	db, err := sql.Open("sqlite", path)
-	if err != nil {
-		t.Fatal(err)
-	}
-	for _, statement := range sqliteSchemaV7Statements {
-		if _, err := db.Exec(statement); err != nil {
-			t.Fatal(err)
-		}
-	}
-	oldSelector, oldProxy := bytes.Repeat([]byte{1}, 32), bytes.Repeat([]byte{2}, 32)
-	verifierState, err := NewPersistentState()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if err := verifierState.SetAccessToken("correct horse battery token"); err != nil {
-		t.Fatal(err)
-	}
-	verifier := verifierState.AccessTokenVerifier
-	for _, query := range []string{
-		"INSERT INTO schema_version (id, version) VALUES (1, 7)",
-		"INSERT INTO state_metadata (id, installation_id) VALUES (1, '00112233445566778899aabbccddeeff')",
-		"INSERT INTO preferences (id, reveal_endpoints, refresh_policy) VALUES (1, 1, '1h')",
-		"INSERT INTO excluded_node_ids (node_id, preference_id) VALUES ('legacy-node', 1)",
-		"INSERT INTO browser_sessions (token, csrf, expires_at_ns) VALUES ('AQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQEBAQE', 'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI', 1)",
-		"INSERT INTO last_good (id, generation, created_at_ns, rendered_subscription, fetched_generation) VALUES (1, 1, 1, 'legacy', 0)",
-	} {
-		if _, err := db.Exec(query); err != nil {
-			t.Fatal(err)
-		}
-	}
-	if _, err := db.Exec("INSERT INTO subscription_generation (id, generation, selector_key, proxy_auth_key, account_binding, activated_at_ns) VALUES (1, 1, ?, ?, ?, 1)", oldSelector, oldProxy, bytes.Repeat([]byte{3}, 32)); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO access_token_verifier (id, memory_kib, iterations, parallelism, salt, hash) VALUES (1, ?, ?, ?, ?, ?)", verifier.Parameters.MemoryKiB, verifier.Parameters.Iterations, verifier.Parameters.Parallelism, verifier.Salt, verifier.Hash); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO last_good_nodes (position, last_good_id, node_id, selector, provider, host, port, name, group_name, eligible, excluded) VALUES (0, 1, 'legacy-node', 'n_legacy', 'quickfox', '127.0.0.1', 80, 'legacy', 'legacy', 1, 0)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO active_session (id, generation, created_at_ns, expires_at_ns) VALUES (1, 1, 1, 2)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO active_session_providers (provider_id, session_id, expires_at_ns, user_id, account_display, account_tier, subscription_active, refresh_state) VALUES ('quickfox', 1, 2, 'user', 'display', 'VIP', 1, X'00')"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO active_session_authorities (provider_id, authority_id, protocol, authority) VALUES ('quickfox', 'default', 'quickfox-native', X'00')"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO active_session_nodes (position, session_id, node_id, selector, provider_id, protocol, authority_id, host, port, name, group_name, model, weight, auto, eligible, excluded, health, udp_health, tcp_rtt_ns) VALUES (0, 1, 'legacy-node', 'n_legacy', 'quickfox', 'quickfox-native', 'default', '127.0.0.1', 80, 'legacy', 'legacy', '', 0, 0, 1, 0, 'unknown', 'unknown', 0)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("INSERT INTO active_session_selectors (selector, session_id, node_id, generation, tombstoned) VALUES ('n_legacy', 1, 'legacy-node', 1, 0)"); err != nil {
-		t.Fatal(err)
-	}
-	if _, err := db.Exec("UPDATE browser_sessions SET expires_at_ns = ?", nanos(time.Now().Add(time.Hour))); err != nil {
-		t.Fatal(err)
-	}
-	if err := db.Close(); err != nil {
-		t.Fatal(err)
-	}
-	if err := os.Chmod(path, 0o600); err != nil {
-		t.Fatal(err)
-	}
-	store, err := NewSQLiteStore(dir)
-	if err != nil {
-		t.Fatal(err)
-	}
-	defer store.Close()
-	loaded, err := store.Load()
-	if err != nil {
-		t.Fatal(err)
-	}
-	if loaded.ActiveSession != nil || len(loaded.Subscription.AccountBinding) != 0 || loaded.LastGood.RenderedSubscription != "" {
-		t.Fatalf("renewable state survived migration: %#v", loaded)
-	}
-	if bytes.Equal(loaded.Subscription.SelectorKey, oldSelector) || bytes.Equal(loaded.Subscription.ProxyAuthKey, oldProxy) {
-		t.Fatal("migration did not rotate keys")
-	}
-	if loaded.AccessTokenVerifier == nil || !bytes.Equal(loaded.AccessTokenVerifier.Salt, verifier.Salt) || !bytes.Equal(loaded.AccessTokenVerifier.Hash, verifier.Hash) || loaded.AccessTokenVerifier.Parameters != verifier.Parameters {
-		t.Fatal("access verifier did not survive migration")
-	}
-	if !loaded.Preferences.RevealEndpoints || !loaded.Preferences.ExcludedNodeIDs["legacy-node"] {
-		t.Fatalf("preferences not preserved: %#v", loaded.Preferences)
-	}
-	if err := validateSQLiteSchema(store.db); err != nil {
-		t.Fatal(err)
-	}
-	var sessions int
-	if err := store.db.QueryRow("SELECT COUNT(*) FROM browser_sessions").Scan(&sessions); err != nil || sessions != 1 {
-		t.Fatalf("browser sessions = %d, %v", sessions, err)
-	}
-	var renewableRows int
-	if err := store.db.QueryRow("SELECT (SELECT COUNT(*) FROM active_session) + (SELECT COUNT(*) FROM active_session_providers) + (SELECT COUNT(*) FROM active_session_authorities) + (SELECT COUNT(*) FROM active_session_nodes) + (SELECT COUNT(*) FROM active_session_selectors) + (SELECT COUNT(*) FROM last_good_nodes)").Scan(&renewableRows); err != nil || renewableRows != 0 {
-		t.Fatalf("renewable rows = %d, %v", renewableRows, err)
-	}
-}
-
-func TestHistoricalSchemasMigrateToExactV8(t *testing.T) {
-	fixtures := []struct {
+func TestHistoricalSchemasMigrateToExactV9(t *testing.T) {
+	for _, fixture := range []struct {
 		version    int
 		statements []string
 	}{
-		{4, sqliteSchemaV5Statements[:len(sqliteSchemaV4Tables)]},
-		{5, sqliteSchemaV5Statements},
-		{6, sqliteSchemaV6Statements},
-		{7, sqliteSchemaV7Statements},
-	}
-	for _, fixture := range fixtures {
+		{4, sqliteSchemaV5Statements[:len(sqliteSchemaV4Tables)]}, {5, sqliteSchemaV5Statements}, {6, sqliteSchemaV6Statements}, {7, sqliteSchemaV7Statements},
+	} {
 		t.Run(fmt.Sprintf("v%d", fixture.version), func(t *testing.T) {
-			dir := t.TempDir()
-			if err := os.Chmod(dir, 0o700); err != nil {
+			directory := t.TempDir()
+			if err := os.Chmod(directory, 0700); err != nil {
 				t.Fatal(err)
 			}
-			path := filepath.Join(dir, sqliteStateFileName)
+			path := filepath.Join(directory, sqliteStateFileName)
 			db, err := sql.Open("sqlite", path)
 			if err != nil {
 				t.Fatal(err)
 			}
 			for _, statement := range fixture.statements {
-				if _, err := db.Exec(statement); err != nil {
+				if _, err := db.ExecContext(t.Context(), statement); err != nil {
 					t.Fatal(err)
 				}
 			}
 			for _, query := range []string{
-				fmt.Sprintf("INSERT INTO schema_version (id, version) VALUES (1, %d)", fixture.version),
-				"INSERT INTO state_metadata (id, installation_id) VALUES (1, '00112233445566778899aabbccddeeff')",
-				"INSERT INTO subscription_generation (id, generation, selector_key, proxy_auth_key, account_binding, activated_at_ns) VALUES (1, 1, zeroblob(32), zeroblob(32), NULL, 1)",
-				"INSERT INTO preferences (id, reveal_endpoints, refresh_policy) VALUES (1, 0, '')",
-				"INSERT INTO last_good (id, generation, created_at_ns, rendered_subscription, fetched_generation) VALUES (1, 0, NULL, '', 0)",
+				fmt.Sprintf("INSERT INTO schema_version (id,version) VALUES (1,%d)", fixture.version),
+				"INSERT INTO state_metadata (id,installation_id) VALUES (1,'00112233445566778899aabbccddeeff')",
+				"INSERT INTO preferences (id,reveal_endpoints,refresh_policy) VALUES (1,1,'1h')",
+				"INSERT INTO subscription_generation (id,generation,selector_key,proxy_auth_key,account_binding,activated_at_ns) VALUES (1,1,zeroblob(32),zeroblob(32),NULL,1)",
+				"INSERT INTO last_good (id,generation,created_at_ns,rendered_subscription,fetched_generation) VALUES (1,0,NULL,'',0)",
 			} {
-				if _, err := db.Exec(query); err != nil {
+				if _, err := db.ExecContext(t.Context(), query); err != nil {
 					t.Fatal(err)
 				}
 			}
 			if err := db.Close(); err != nil {
 				t.Fatal(err)
 			}
-			if err := os.Chmod(path, 0o600); err != nil {
+			if err := os.Chmod(path, 0600); err != nil {
 				t.Fatal(err)
 			}
-			store, err := NewSQLiteStore(dir)
+			store, err := NewSQLiteStore(directory)
 			if err != nil {
 				t.Fatal(err)
 			}
-			defer store.Close()
-			if _, err := store.Load(); err != nil {
+			defer store.Close(t.Context())
+			loaded, err := store.Load(t.Context())
+			if err != nil {
 				t.Fatal(err)
 			}
-			if err := validateSQLiteSchema(store.db); err != nil {
+			if loaded.ActiveSession != nil || !loaded.Preferences.RevealEndpoints {
+				t.Fatal("historical migration changed durable preferences")
+			}
+			if err := validateSQLiteSchema(t.Context(), store.db); err != nil {
 				t.Fatal(err)
 			}
 		})
+	}
+}
+
+func TestStoreLoadIsReadOnlyAndContextAware(t *testing.T) {
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store, err := NewSQLiteStore(directory, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer store.Close(t.Context())
+	if _, err := store.LoadOrCreate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.db.ExecContext(t.Context(), "INSERT INTO browser_sessions (token_hash,csrf,expires_at_ns) VALUES (zeroblob(32),'AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI',1)"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	var count int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM browser_sessions").Scan(&count); err != nil || count != 1 {
+		t.Fatal("Load pruned expired sessions")
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if _, err := store.Load(ctx); !errors.Is(err, context.Canceled) {
+		t.Fatalf("canceled Load = %v", err)
+	}
+}
+
+func newClockedStore(t *testing.T) (*SQLiteStore, time.Time) {
+	t.Helper()
+	directory := t.TempDir()
+	if err := os.Chmod(directory, 0700); err != nil {
+		t.Fatal(err)
+	}
+	now := time.Now().UTC()
+	store, err := NewSQLiteStore(directory, WithClock(func() time.Time { return now }))
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.LoadOrCreate(t.Context()); err != nil {
+		t.Fatal(err)
+	}
+	t.Cleanup(func() {
+		if err := store.Close(context.Background()); err != nil {
+			t.Error(err)
+		}
+	})
+	return store, now
+}
+
+func TestBrowserSessionEvictionKeepsNewestExpiry(t *testing.T) {
+	store, now := newClockedStore(t)
+	tokens := make([]string, 3)
+	csrf := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
+	for index := range tokens {
+		tokens[index] = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{byte(index + 1)}, 32))
+		if err := store.SaveBrowserSession(t.Context(), tokens[index], csrf, now.Add(time.Duration(index+1)*time.Hour), 4096); err != nil {
+			t.Fatal(err)
+		}
+	}
+	restored := make(map[string]bool)
+	if err := store.RestoreBrowserSessions(t.Context(), now, 2, func(hash []byte, _ string, _ time.Time) error { restored[string(hash)] = true; return nil }); err != nil {
+		t.Fatal(err)
+	}
+	oldest := BrowserSessionTokenHash(tokens[0])
+	if len(restored) != 2 || restored[string(oldest[:])] {
+		t.Fatal("eviction retained oldest session")
+	}
+	for _, token := range tokens[1:] {
+		hash := BrowserSessionTokenHash(token)
+		if !restored[string(hash[:])] {
+			t.Fatal("newest session evicted")
+		}
+	}
+}
+
+func TestVerifierChangeRevokesDurableSessionsAtomically(t *testing.T) {
+	store, now := newClockedStore(t)
+	if _, err := store.Update(t.Context(), func(candidate *PersistentState) error {
+		return candidate.SetAccessToken("original fixture access token")
+	}); err != nil {
+		t.Fatal(err)
+	}
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	csrf := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
+	if err := store.SaveBrowserSession(t.Context(), token, csrf, now.Add(time.Hour), 4096); err != nil {
+		t.Fatal(err)
+	}
+	original, err := store.Load(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Update(t.Context(), func(candidate *PersistentState) error {
+		return candidate.ChangeAccessToken("incorrect fixture access token", "replacement fixture access token")
+	}); !errors.Is(err, ErrInvalidAccessToken) {
+		t.Fatalf("wrong-current change = %v", err)
+	}
+	if _, err := store.Update(t.Context(), func(candidate *PersistentState) error {
+		return candidate.ChangeAccessToken("original fixture access token", "original fixture access token")
+	}); !errors.Is(err, ErrInvalidNextAccessToken) {
+		t.Fatalf("same-token change = %v", err)
+	}
+	changed, err := store.Update(t.Context(), func(candidate *PersistentState) error {
+		return candidate.ChangeAccessToken("original fixture access token", "replacement fixture access token")
+	})
+	if err != nil {
+		t.Fatal(err)
+	}
+	if bytes.Equal(original.AccessTokenVerifier.Salt, changed.AccessTokenVerifier.Salt) || bytes.Equal(original.AccessTokenVerifier.Hash, changed.AccessTokenVerifier.Hash) {
+		t.Fatal("verifier salt or derived hash reused")
+	}
+	var count int
+	if err := store.db.QueryRowContext(t.Context(), "SELECT COUNT(*) FROM browser_sessions").Scan(&count); err != nil || count != 0 {
+		t.Fatal("verifier update left durable sessions")
+	}
+}
+
+func TestStateBusyIsNotCorruption(t *testing.T) {
+	store, _ := newClockedStore(t)
+	if _, err := store.db.ExecContext(t.Context(), "PRAGMA busy_timeout = 1"); err != nil {
+		t.Fatal(err)
+	}
+	external, err := sql.Open("sqlite", store.Path())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer external.Close()
+	connection, err := external.Conn(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer connection.Close()
+	if _, err := connection.ExecContext(t.Context(), "BEGIN IMMEDIATE"); err != nil {
+		t.Fatal(err)
+	}
+	defer func() { _, _ = connection.ExecContext(context.Background(), "ROLLBACK") }()
+	_, err = store.Update(t.Context(), func(*PersistentState) error { return nil })
+	if !errors.Is(err, ErrStateBusy) || errors.Is(err, ErrCorruptState) {
+		t.Fatalf("busy state classification = %v", err)
 	}
 }

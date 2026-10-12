@@ -231,7 +231,7 @@ func TestNodesFromLinesDropsTransportIneligibleLines(t *testing.T) {
 	}
 }
 
-func TestNodesFromLinesPreservesSharedEndpointAcrossGroups(t *testing.T) {
+func TestNodesFromLinesDeduplicatesSharedEndpointAcrossLabels(t *testing.T) {
 	nodes, err := nodesFromLines(Lines{
 		Groups: []Group{{ID: "video", Name: "Video"}, {ID: "direct", Name: "Direct"}},
 		Lines: []Line{
@@ -242,7 +242,7 @@ func TestNodesFromLinesPreservesSharedEndpointAcrossGroups(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(nodes) != 2 || nodes[0].ID == nodes[1].ID || nodes[0].AuthorityID != "windows" || nodes[1].AuthorityID != "windows" {
+	if len(nodes) != 1 || nodes[0].AuthorityID != "windows" {
 		t.Fatalf("shared endpoint nodes = %#v", nodes)
 	}
 }

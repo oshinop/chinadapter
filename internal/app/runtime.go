@@ -12,7 +12,6 @@ import (
 
 	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
@@ -48,6 +47,8 @@ func (e *accessError) Error() string {
 		return "access token already initialized"
 	case "access_invalid":
 		return "access token rejected"
+	case "access_next_invalid":
+		return "next access token rejected"
 	default:
 		return "access unavailable"
 	}
@@ -61,6 +62,8 @@ func classifyAccessSetupError(cause error) error {
 	switch {
 	case errors.Is(cause, state.ErrAccessTokenAlreadyInitialized):
 		return &accessError{cause: cause, code: "access_initialized", status: http.StatusConflict}
+	case errors.Is(cause, state.ErrInvalidNextAccessToken):
+		return &accessError{cause: cause, code: "access_next_invalid", status: http.StatusBadRequest}
 	case errors.Is(cause, state.ErrInvalidAccessToken):
 		return &accessError{cause: cause, code: "access_invalid", status: http.StatusUnauthorized}
 	default:
@@ -160,11 +163,9 @@ type ProviderController interface {
 	Logout(context.Context, provider.ID) error
 }
 
-// SubscriptionPublisher prepares and atomically persists the subscription,
-// rendered LastGood body, and active provider authority for one control commit.
+// SubscriptionPublisher atomically publishes the immutable persisted catalog.
 type SubscriptionPublisher interface {
-	PrepareRuntimeCommit(context.Context, string) (subscription.RuntimeCommitPlan, error)
-	CommitRuntimeSnapshot(context.Context, subscription.RuntimeCommitPlan, *state.RuntimeSnapshot) (func() error, error)
+	Update(state.PersistentState) error
 	Metadata() (subscription.Metadata, error)
 }
 
@@ -177,7 +178,7 @@ type RuntimeConfig struct {
 	Providers     ProviderController
 	Subscriptions SubscriptionPublisher
 	Accounts      accounts.Lifecycle
-	Selectors     *SelectorCoordinator
+	Credentials   *CredentialCoordinator
 	MutationMu    *sync.Mutex
 
 	SocksAddress    string
@@ -202,7 +203,7 @@ type Runtime struct {
 	providers     ProviderController
 	accounts      accounts.Lifecycle
 	subscriptions SubscriptionPublisher
-	selectors     *SelectorCoordinator
+	credentials   *CredentialCoordinator
 
 	socksAddress string
 	httpAddress  string
@@ -221,8 +222,8 @@ type Runtime struct {
 
 // NewRuntime validates the dependencies needed by every web.Backend method.
 func NewRuntime(config RuntimeConfig) (*Runtime, error) {
-	if config.Manager == nil || config.Store == nil || config.Providers == nil || config.Subscriptions == nil || config.Selectors == nil {
-		return nil, errors.New("app: runtime requires manager, store, provider controller, subscription service, and selector coordinator")
+	if config.Manager == nil || config.Store == nil || config.Providers == nil || config.Subscriptions == nil || config.Credentials == nil {
+		return nil, errors.New("app: runtime requires manager, store, provider controller, subscription service, and credential coordinator")
 	}
 	if config.Now == nil {
 		config.Now = time.Now
@@ -246,7 +247,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	if config.RefreshEvery < minRefreshPolicy || config.RefreshEvery > maxRefreshPolicy {
 		config.RefreshEvery = 23 * time.Hour
 	}
-	persistent, err := config.Store.Load()
+	persistent, err := config.Store.Load(context.Background())
 	if err != nil {
 		return nil, err
 	}
@@ -263,7 +264,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 	}
 	runtime := &Runtime{
 		manager: config.Manager, store: config.Store, providers: config.Providers,
-		subscriptions: config.Subscriptions, selectors: config.Selectors,
+		subscriptions: config.Subscriptions, credentials: config.Credentials,
 		socksAddress: config.SocksAddress, httpAddress: config.HTTPAddress,
 		version:   config.Version,
 		startedAt: config.StartedAt.UTC(), now: config.Now, dial: config.DialContext,
@@ -326,24 +327,22 @@ func (r *Runtime) RunAccounts(ctx context.Context) error {
 
 // AccessStatus reports only whether an access-token verifier is configured.
 // Browser-session fields are added by web and never stored here.
-func (r *Runtime) AccessStatus(context.Context) (web.AccessStatus, error) {
+func (r *Runtime) AccessStatus(ctx context.Context) (web.AccessStatus, error) {
 	if r == nil {
 		return web.AccessStatus{}, errors.New("app: runtime unavailable")
 	}
 	if !r.alive.Load() {
 		return web.AccessStatus{}, errRuntimeStopped
 	}
-	persistent, err := r.store.Load()
+	persistent, err := r.store.Load(ctx)
 	if err != nil {
 		return web.AccessStatus{}, err
 	}
 	return web.AccessStatus{Initialized: persistent.AccessTokenInitialized()}, nil
 }
 
-// AccessSetup atomically commits the first local access-token verifier, then
-// gives the manager the verifier-derived account-binding key. The raw token is
-// only an input to the state mutator and is never retained by Runtime.
-func (r *Runtime) AccessSetup(_ context.Context, token string) error {
+// AccessSetup commits the first verifier and installs local credential authority.
+func (r *Runtime) AccessSetup(ctx context.Context, token string) error {
 	if r == nil {
 		return classifyAccessSetupError(errors.New("runtime unavailable"))
 	}
@@ -355,7 +354,7 @@ func (r *Runtime) AccessSetup(_ context.Context, token string) error {
 	if !r.alive.Load() {
 		return classifyAccessSetupError(errRuntimeStopped)
 	}
-	persistent, err := r.store.Update(func(candidate *state.PersistentState) error {
+	persistent, err := r.store.Update(ctx, func(candidate *state.PersistentState) error {
 		return candidate.SetAccessToken(token)
 	})
 	if err != nil {
@@ -364,9 +363,14 @@ func (r *Runtime) AccessSetup(_ context.Context, token string) error {
 	if persistent.AccessTokenVerifier == nil {
 		return classifyAccessSetupError(errors.New("access verifier was not persisted"))
 	}
-	if err := r.manager.ConfigureBindingKey(persistent.AccessTokenVerifier.BindingKey()); err != nil {
-		// The verifier is already durable. Startup will retry this deterministic
-		// configuration before accepting a login, rather than risking a reset.
+	authority, err := persistent.Identity()
+	if err != nil {
+		return classifyAccessSetupError(err)
+	}
+	if _, err := r.credentials.Install(authority, persistent.ActiveSession); err != nil {
+		return classifyAccessSetupError(err)
+	}
+	if err := r.subscriptions.Update(persistent); err != nil {
 		return classifyAccessSetupError(err)
 	}
 	r.publishState()
@@ -376,7 +380,7 @@ func (r *Runtime) AccessSetup(_ context.Context, token string) error {
 // AccessLogin verifies a submitted access token against the durable Argon2id
 // verifier. Verification is constant-time within state and returns one public
 // failure for unset, malformed, and mismatched tokens.
-func (r *Runtime) AccessLogin(_ context.Context, token string) error {
+func (r *Runtime) AccessLogin(ctx context.Context, token string) error {
 	if r == nil {
 		return classifyAccessSetupError(errors.New("runtime unavailable"))
 	}
@@ -388,13 +392,67 @@ func (r *Runtime) AccessLogin(_ context.Context, token string) error {
 	if !r.alive.Load() {
 		return classifyAccessSetupError(errRuntimeStopped)
 	}
-	persistent, err := r.store.Load()
+	persistent, err := r.store.Load(ctx)
 	if err != nil {
 		return classifyAccessSetupError(err)
 	}
 	if !persistent.VerifyAccessToken(token) {
 		return invalidAccessError()
 	}
+	return nil
+}
+
+// AccessChangeToken rotates installation credentials without touching provider
+// account authority. SQLite revokes persisted browser sessions in the same write.
+func (r *Runtime) AccessChangeToken(ctx context.Context, current, next string) error {
+	if r == nil || !r.alive.Load() {
+		return classifyAccessSetupError(errRuntimeStopped)
+	}
+	r.mutations.Lock()
+	defer r.mutations.Unlock()
+	if !r.alive.Load() {
+		return classifyAccessSetupError(errRuntimeStopped)
+	}
+	persistent, err := r.store.Update(ctx, func(candidate *state.PersistentState) error {
+		if err := candidate.ChangeAccessToken(current, next); err != nil {
+			return err
+		}
+		if candidate.ActiveSession != nil {
+			authority, err := candidate.Identity()
+			if err != nil {
+				return err
+			}
+			candidate.ActiveSession.Generation++
+			candidate.ActiveSession.Selectors, err = state.BuildSelectors(candidate.ActiveSession.Nodes, authority)
+			if err != nil {
+				return err
+			}
+			for index := range candidate.ActiveSession.Nodes {
+				credentials, _ := authority.Credentials(candidate.ActiveSession.Nodes[index].Route())
+				candidate.ActiveSession.Nodes[index].Selector = credentials.Username
+			}
+		}
+		return nil
+	})
+	if err != nil {
+		return classifyAccessSetupError(err)
+	}
+	if persistent.ActiveSession != nil {
+		if err := r.manager.Commit(persistent.ActiveSession); err != nil {
+			return classifyAccessSetupError(err)
+		}
+	}
+	authority, err := persistent.Identity()
+	if err != nil {
+		return classifyAccessSetupError(err)
+	}
+	if _, err := r.credentials.Install(authority, persistent.ActiveSession); err != nil {
+		return classifyAccessSetupError(err)
+	}
+	if err := r.subscriptions.Update(persistent); err != nil {
+		return classifyAccessSetupError(err)
+	}
+	r.publishState()
 	return nil
 }
 
@@ -519,12 +577,12 @@ func (r *Runtime) NodeDetails(_ context.Context, nodeID string) (web.NodeDetails
 	if !found || ref.NodeID != node.ID {
 		return web.NodeDetails{}, errors.New("app: node selector authority is stale")
 	}
-	registry := r.selectors.Registry()
+	registry := r.credentials.Identity()
 	if registry == nil {
 		return web.NodeDetails{}, errors.New("app: node selector authority is unavailable")
 	}
-	credentials, authorized := registry.Credentials(selector.NodeIdentity{NodeID: node.ID})
-	if !authorized || credentials.Selector != node.Selector {
+	credentials, authorized := registry.Credentials(node.Route())
+	if !authorized || credentials.Username != node.Selector {
 		return web.NodeDetails{}, errors.New("app: node selector authority is stale")
 	}
 	latency := 0
@@ -534,7 +592,7 @@ func (r *Runtime) NodeDetails(_ context.Context, nodeID string) (web.NodeDetails
 	return web.NodeDetails{
 		ID: node.ID, Name: node.Name, Group: node.Group, Provider: string(node.Provider),
 		UpstreamHost: node.Host, UpstreamPort: int(node.Port),
-		SocksAddress: r.socksAddress, SocksUsername: credentials.Selector, SocksPassword: credentials.Password,
+		SocksAddress: r.socksAddress, SocksUsername: credentials.Username, SocksPassword: credentials.Password,
 		Health: string(node.Health), TCPLatencyMS: latency,
 	}, nil
 }
@@ -552,7 +610,7 @@ func (r *Runtime) Login(ctx context.Context, input web.LoginInput) (web.Account,
 	if !id.Valid() {
 		return web.Account{}, classifyLoginError(provider.ErrUnknownProvider)
 	}
-	persistent, err := r.store.Load()
+	persistent, err := r.store.Load(ctx)
 	if err != nil {
 		return web.Account{}, classifyLoginError(err)
 	}
@@ -601,8 +659,7 @@ func (r *Runtime) Logout(ctx context.Context, providerID string) error {
 	return nil
 }
 
-// Refresh verifies a complete control callback commit. The control callback
-// persists the rendered subscription before it makes the snapshot current.
+// Refresh verifies a complete durable provider catalog commit.
 func (r *Runtime) Refresh(ctx context.Context, providerID string) error {
 	if r == nil {
 		return errors.New("app: runtime unavailable")
@@ -746,58 +803,30 @@ func (r *Runtime) CommitControlSnapshotLocked(snapshot *state.RuntimeSnapshot) e
 	if !r.alive.Load() {
 		return errRuntimeStopped
 	}
-	if snapshot == nil {
-		_, err := r.store.Update(func(candidate *state.PersistentState) error {
-			candidate.ActiveSession = nil
-			return nil
-		})
-		return err
-	}
-	if !state.SessionUsable(snapshot, r.now()) {
-		return errors.New("app: incomplete provider snapshot")
-	}
-	candidate := snapshot.Clone()
-	bindingID := candidate.AccountBindingID()
-	plan, err := r.subscriptions.PrepareRuntimeCommit(context.Background(), bindingID)
+	ctx := context.Background()
+	previousIdentity := r.credentials.Identity()
+	previousSnapshot := r.manager.Current()
+	rebuilt, err := r.credentials.Install(previousIdentity, snapshot)
 	if err != nil {
 		return err
 	}
-	rollbackManager, err := r.manager.InstallEpoch(plan.Authority, bindingID)
+	var previous state.PersistentState
+	persistent, err := r.store.Update(ctx, func(candidate *state.PersistentState) error {
+		previous = candidate.Clone()
+		candidate.ActiveSession = rebuilt
+		return nil
+	})
 	if err != nil {
-		return err
+		_, restoreErr := r.credentials.Install(previousIdentity, previousSnapshot)
+		return errors.Join(err, restoreErr)
 	}
-	if rollbackManager == nil {
-		rollbackManager = func() {}
-	}
-	rebuilt, rollbackSelectors, err := r.selectors.InstallEpoch(plan.Authority, candidate)
-	if err != nil {
-		rollbackManager()
-		return err
-	}
-	if rollbackSelectors == nil {
-		rollbackSelectors = func() {}
-	}
-	rollbackPersistent, err := r.subscriptions.CommitRuntimeSnapshot(context.Background(), plan, rebuilt)
-	if err != nil {
-		rollbackSelectors()
-		rollbackManager()
-		return err
-	}
-	if rollbackPersistent == nil {
-		rollbackPersistent = func() error { return nil }
-	}
-	abort := func(cause error) error {
-		rollbackSelectors()
-		rollbackManager()
-		if rollbackErr := rollbackPersistent(); rollbackErr != nil {
-			return errors.Join(cause, rollbackErr)
+	if rebuilt != nil {
+		if err := r.manager.Commit(rebuilt); err != nil {
+			_, restoreErr := r.credentials.Install(previousIdentity, previousSnapshot)
+			return errors.Join(err, restoreErr, r.store.Save(ctx, previous))
 		}
-		return cause
 	}
-	if err := r.manager.Commit(rebuilt); err != nil {
-		return abort(err)
-	}
-	return nil
+	return r.subscriptions.Update(persistent)
 }
 
 func parseRefreshPolicy(value string) (time.Duration, error) {

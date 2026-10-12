@@ -11,9 +11,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/provider/coordinator"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
@@ -109,17 +109,17 @@ func newFixture(t *testing.T, ids ...provider.ID) *fixture {
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.LoadOrCreate(); err != nil {
+	if _, err := store.LoadOrCreate(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.Update(func(candidate *state.PersistentState) error {
+	if _, err := store.Update(t.Context(), func(candidate *state.PersistentState) error {
 		return candidate.SetAccessToken("correct horse battery token")
 	}); err != nil {
 		t.Fatal(err)
 	}
 	fixture := &fixture{store: store, clock: newFakeClock()}
 	t.Cleanup(func() {
-		if err := fixture.store.Close(); err != nil {
+		if err := fixture.store.Close(t.Context()); err != nil {
 			t.Error(err)
 		}
 	})
@@ -137,20 +137,20 @@ func newFixture(t *testing.T, ids ...provider.ID) *fixture {
 
 func (fixture *fixture) restore(t *testing.T) {
 	t.Helper()
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := state.NewManagerWithSubscription(persistent.ActiveSession, persistent.Subscription, persistent.AccessTokenVerifier.BindingKey())
+	manager, err := state.NewManager(persistent.ActiveSession)
 	if err != nil {
 		t.Fatal(err)
 	}
 	fixture.manager = manager
-	service, err := subscription.NewService(subscription.ServiceConfig{Store: fixture.store, SocksAddress: "127.0.0.1:10808", Now: fixture.clock.Now})
+	service, err := subscription.NewService(subscription.ServiceConfig{Store: fixture.store, SocksAddress: "127.0.0.1:10808"})
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := selector.NewRegistry(persistent.Subscription)
+	authority, err := persistent.Identity()
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -163,43 +163,21 @@ func (fixture *fixture) restore(t *testing.T) {
 		t.Fatal(err)
 	}
 	fixture.coordinator, err = coordinator.New(coordinator.Config{
-		Providers: providers, Manager: manager, SelectorBuilder: selectorBuilder{registry}, Clock: fixture.clock.Now,
+		Providers: providers, Manager: manager, SelectorBuilder: selectorBuilder{authority}, Clock: fixture.clock.Now,
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
-			if snapshot == nil {
-				_, err := fixture.store.Update(func(candidate *state.PersistentState) error { candidate.ActiveSession = nil; return nil })
-				return err
-			}
-			ctx := t.Context()
-			plan, err := service.PrepareRuntimeCommit(ctx, snapshot.AccountBindingID())
+			persistent, err := fixture.store.Update(t.Context(), func(candidate *state.PersistentState) error {
+				candidate.ActiveSession = snapshot.Clone()
+				return nil
+			})
 			if err != nil {
 				return err
 			}
-			rollbackManager, err := manager.InstallEpoch(plan.Authority, snapshot.AccountBindingID())
-			if err != nil {
-				return err
+			if snapshot != nil {
+				if err := manager.Commit(snapshot); err != nil {
+					return err
+				}
 			}
-			registry, err := selector.NewRegistry(plan.Authority)
-			if err != nil {
-				rollbackManager()
-				return err
-			}
-			built, err := registry.Build(snapshot.Nodes)
-			if err != nil {
-				rollbackManager()
-				return err
-			}
-			next := snapshot.Clone()
-			next.Nodes, next.Selectors = built.Nodes, built.Selectors
-			rollbackStore, err := service.CommitRuntimeSnapshot(ctx, plan, next)
-			if err != nil {
-				rollbackManager()
-				return err
-			}
-			if err := manager.Commit(next); err != nil {
-				rollbackManager()
-				return errors.Join(err, rollbackStore())
-			}
-			return nil
+			return service.Update(persistent)
 		},
 	})
 	if err != nil {
@@ -207,11 +185,10 @@ func (fixture *fixture) restore(t *testing.T) {
 	}
 }
 
-type selectorBuilder struct{ registry *selector.Registry }
+type selectorBuilder struct{ identity *identity.Identity }
 
 func (builder selectorBuilder) Build(nodes []state.Node) (map[string]state.NodeRef, error) {
-	built, err := builder.registry.Build(nodes)
-	return built.Selectors, err
+	return state.BuildSelectors(nodes, builder.identity)
 }
 
 func (fixture *fixture) supervisor(t *testing.T, every time.Duration) *Supervisor {
@@ -232,17 +209,21 @@ func runDue(t *testing.T, supervisor *Supervisor) {
 	workers.Wait()
 }
 
-func credentials(t *testing.T, fixture *fixture, id provider.ID) selector.Credentials {
+func credentials(t *testing.T, fixture *fixture, id provider.ID) identity.Credentials {
 	t.Helper()
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := selector.NewRegistry(persistent.Subscription)
+	authority, err := persistent.Identity()
 	if err != nil {
 		t.Fatal(err)
 	}
-	credential, ok := registry.Credentials(selector.NodeIdentity{NodeID: string(id) + "-node"})
+	node, available := persistent.ActiveSession.NodeByID(string(id) + "-node")
+	if !available {
+		t.Fatal("node unavailable")
+	}
+	credential, ok := authority.Credentials(node.Route())
 	if !ok {
 		t.Fatal("node credentials unavailable")
 	}
@@ -325,7 +306,7 @@ func TestTransientFailuresRetainSnapshotAndRecover(t *testing.T) {
 	if status.Status != StatusOK || status.Attempts != 0 || !status.LastSuccess.Equal(fixture.clock.Now()) {
 		t.Fatalf("first success did not recover: %+v", status)
 	}
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -346,7 +327,7 @@ func TestPartialRefreshCommitPersistsRotatedToken(t *testing.T) {
 	if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, catalogError) {
 		t.Fatalf("partial refresh error = %v", err)
 	}
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -373,7 +354,7 @@ func TestRestartWithStaleSnapshotRefreshesImmediately(t *testing.T) {
 	fixture := newFixture(t, "alpha")
 	original := fixture.manager.Current().Providers["alpha"]
 	fixture.clock.advance(8 * 24 * time.Hour)
-	if err := fixture.store.Close(); err != nil {
+	if err := fixture.store.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	directory := filepath.Dir(fixture.store.Path())
@@ -405,7 +386,7 @@ func TestRestartWithStaleSnapshotRefreshesImmediately(t *testing.T) {
 	if fixture.drivers[0].calls() != 1 {
 		t.Fatalf("startup refresh count = %d", fixture.drivers[0].calls())
 	}
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -498,7 +479,7 @@ func TestGlobalRefreshCommitsHealthySiblingWithoutCancellation(t *testing.T) {
 	if err := <-finished; !errors.Is(err, provider.ErrSessionRejected) {
 		t.Fatalf("global refresh rejection = %v", err)
 	}
-	persistent, err := fixture.store.Load()
+	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {
 		t.Fatal(err)
 	}

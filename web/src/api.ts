@@ -1,6 +1,7 @@
 import type {
   AccessSessionResponse,
   AccessStatusResponse,
+  AccessTokenChangeInput,
   EventMessage,
   LoginResponse,
   NodeDetails,
@@ -118,6 +119,13 @@ export class ApiClient {
 
   async loginAccess(token: string): Promise<AccessSessionResponse> {
     const session = await this.request<AccessSessionResponse>("/access/login", { method: "POST", body: { token }, useCSRF: false });
+    this.setCsrfToken(session.csrfToken || "");
+    return session;
+  }
+
+  async changeAccessToken(current: string, next: string): Promise<AccessSessionResponse> {
+    const body: AccessTokenChangeInput = { current, next };
+    const session = await this.request<AccessSessionResponse>("/access/token", { method: "POST", body });
     this.setCsrfToken(session.csrfToken || "");
     return session;
   }

@@ -2,43 +2,34 @@
 package state
 
 import (
-	"crypto/hmac"
 	"crypto/rand"
 	"crypto/sha256"
 	"crypto/subtle"
-	"encoding/base64"
 	"encoding/hex"
 	"errors"
 	"fmt"
-	"net/url"
-	"sort"
-	"strconv"
 	"strings"
 	"time"
 	"unicode/utf8"
 
 	"golang.org/x/crypto/argon2"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
 const (
-	maxPersistedNodes            = 4096
-	maxRuntimeNodes              = 4096
-	maxRuntimeSelectorRefs       = 4096 + 8192
-	maxRenderedSubscriptionBytes = 10 << 20
-	maxSessionLifetime           = 24 * time.Hour
-	maxSessionFieldBytes         = 4096
-	maxProviderExtensionBytes    = 3*maxSessionFieldBytes + 128
+	maxRuntimeNodes    = 4096
+	maxSessionLifetime = 24 * time.Hour
 )
 
 var (
-	ErrAccountChanged                = errors.New("account changed")
 	ErrAccessTokenAlreadyInitialized = errors.New("access token is already initialized")
 	ErrInvalidAccessToken            = errors.New("invalid access token")
-	ErrBindingKeyAlreadyConfigured   = errors.New("account binding key is already configured")
+	ErrInvalidNextAccessToken        = errors.New("invalid next access token")
 	ErrStateNotFound                 = errors.New("persistent state not found")
 	ErrCorruptState                  = errors.New("persistent state is corrupt")
+	ErrStateBusy                     = errors.New("state database is busy")
 	ErrInsecureStatePath             = errors.New("state path has insecure ownership or mode")
 	ErrInvalidSnapshot               = errors.New("invalid runtime snapshot")
 	ErrInvalidTransition             = errors.New("invalid service state transition")
@@ -121,6 +112,11 @@ type Node struct {
 	ProbedAt  time.Time     `json:"probedAt,omitempty"`
 }
 
+// Route contains only the inputs the provider transport uses to reach a node.
+func (n Node) Route() identity.Route {
+	return identity.Route{Provider: n.Provider, Protocol: n.Protocol, Host: n.Host, Port: n.Port}
+}
+
 // TunnelEligible reports whether a generic provider transport can accept the
 // node. Protocol-specific validation belongs to that transport.
 func (n Node) TunnelEligible() bool {
@@ -177,6 +173,7 @@ type RuntimeSnapshot struct {
 	Providers  map[provider.ID]provider.Snapshot `json:"-"`
 	Nodes      []Node                            `json:"nodes"`
 	Selectors  map[string]NodeRef                `json:"selectors"`
+	nodeIndex  map[string]int
 }
 
 // Clone deep-copies all mutable runtime fields and opaque provider material.
@@ -190,6 +187,10 @@ func (s *RuntimeSnapshot) Clone() *RuntimeSnapshot {
 		clone.Providers[id] = snapshot.Clone()
 	}
 	clone.Nodes = append([]Node(nil), s.Nodes...)
+	clone.nodeIndex = make(map[string]int, len(clone.Nodes))
+	for index, node := range clone.Nodes {
+		clone.nodeIndex[node.ID] = index
+	}
 	clone.Selectors = make(map[string]NodeRef, len(s.Selectors))
 	for selector, ref := range s.Selectors {
 		clone.Selectors[selector] = ref
@@ -225,30 +226,6 @@ func (s *RuntimeSnapshot) Authority(node Node) (provider.Authority, bool) {
 	return authority.Clone(), true
 }
 
-// AccountBindingID is the canonical composite identity for every active
-// provider account. It is used only as input to keyed account binding.
-func (s *RuntimeSnapshot) AccountBindingID() string {
-	if s == nil || len(s.Providers) == 0 {
-		return ""
-	}
-	ids := make([]string, 0, len(s.Providers))
-	for id := range s.Providers {
-		ids = append(ids, string(id))
-	}
-	sort.Strings(ids)
-	binding := make([]byte, 0, len(ids)*32)
-	for _, rawID := range ids {
-		snapshot := s.Providers[provider.ID(rawID)]
-		binding = strconv.AppendInt(binding, int64(len(rawID)), 10)
-		binding = append(binding, ':')
-		binding = append(binding, rawID...)
-		binding = strconv.AppendInt(binding, int64(len(snapshot.Account.UserID)), 10)
-		binding = append(binding, ':')
-		binding = append(binding, snapshot.Account.UserID...)
-	}
-	return string(binding)
-}
-
 // ProviderExpiresAt returns the latest provider expiry in the aggregate.
 func ProviderExpiresAt(providers map[provider.ID]provider.Snapshot) time.Time {
 	var latest time.Time
@@ -265,16 +242,14 @@ func (s *RuntimeSnapshot) NodeByID(id string) (Node, bool) {
 	if s == nil {
 		return Node{}, false
 	}
-	for _, node := range s.Nodes {
-		if node.ID == id {
-			return node, true
-		}
+	if index, available := s.nodeIndex[id]; available {
+		return s.Nodes[index], true
 	}
 	return Node{}, false
 }
 
-// ResolveSelector resolves a selector in this pinned snapshot.
-func (s *RuntimeSnapshot) ResolveSelector(selector string, _ time.Time) (Node, NodeRef, error) {
+// ResolveSelector resolves a username in this pinned immutable snapshot.
+func (s *RuntimeSnapshot) ResolveSelector(selector string) (Node, NodeRef, error) {
 	if s == nil {
 		return Node{}, NodeRef{}, ErrSelectorUnknown
 	}
@@ -295,7 +270,7 @@ func ValidateRuntimeSnapshot(snapshot *RuntimeSnapshot) error {
 	if snapshot == nil || snapshot.Generation == 0 || snapshot.CreatedAt.IsZero() || snapshot.ExpiresAt.IsZero() {
 		return fmt.Errorf("%w: missing generation, creation time, or expiry", ErrInvalidSnapshot)
 	}
-	if len(snapshot.Nodes) > maxRuntimeNodes || len(snapshot.Selectors) > maxRuntimeSelectorRefs {
+	if len(snapshot.Nodes) > maxRuntimeNodes || len(snapshot.Selectors) > maxRuntimeNodes {
 		return fmt.Errorf("%w: runtime snapshot exceeds selector bounds", ErrInvalidSnapshot)
 	}
 	for id, providerSnapshot := range snapshot.Providers {
@@ -363,69 +338,14 @@ func (p Preferences) clone() Preferences {
 	return clone
 }
 
-// PersistedNode is the last-good non-secret metadata record. Tunnel credentials
-// and account/session material are intentionally absent.
-type PersistedNode struct {
-	ID       string
-	Selector string
-	Provider string
-	Host     string
-	Port     uint16
-	Name     string
-	Group    string
-	Eligible bool
-	Excluded bool
-}
-
-// LastGoodState lets the subscription service retain a structurally valid
-// rendered body during a control-plane outage.
-type LastGoodState struct {
-	CreatedAt            time.Time
-	Nodes                []PersistedNode
-	RenderedSubscription string
-}
-
-func (l LastGoodState) clone() LastGoodState {
-	l.Nodes = append([]PersistedNode(nil), l.Nodes...)
-	return l
-}
-
-// SubscriptionAuthority contains account-bound selector and proxy credential
-// keys. AccountBinding is the stable, non-reversible subscription path token.
-type SubscriptionAuthority struct {
-	SelectorKey    []byte
-	ProxyAuthKey   []byte
-	AccountBinding []byte
-	ActivatedAt    time.Time
-}
-
-const accountBindingDomain = "kfadapter/subscription-account/v2\x00"
-
-func (g SubscriptionAuthority) clone() SubscriptionAuthority {
-	g.SelectorKey = append([]byte(nil), g.SelectorKey...)
-	g.ProxyAuthKey = append([]byte(nil), g.ProxyAuthKey...)
-	g.AccountBinding = append([]byte(nil), g.AccountBinding...)
-	return g
-}
-
-// AccountBindingString returns the raw Base64url stable subscription token.
-// It is empty until the installation has an access token and logged-in account.
-func (g SubscriptionAuthority) AccountBindingString() string {
-	if len(g.AccountBinding) != sha256.Size {
-		return ""
-	}
-	return base64.RawURLEncoding.EncodeToString(g.AccountBinding)
-}
-
 type Argon2idParameters struct {
 	MemoryKiB   uint32
 	Iterations  uint32
 	Parallelism uint8
 }
 
-// AccessTokenVerifier contains only a salted Argon2id verifier. Hash is also
-// the secret HMAC key used to derive the durable account binding; the token is
-// never persisted.
+// AccessTokenVerifier contains only a salted Argon2id verifier. Hash also
+// derives installation-scoped credentials; the raw token is never persisted.
 type AccessTokenVerifier struct {
 	Parameters Argon2idParameters
 	Salt       []byte
@@ -451,15 +371,6 @@ func (v *AccessTokenVerifier) clone() *AccessTokenVerifier {
 	clone.Salt = append([]byte(nil), v.Salt...)
 	clone.Hash = append([]byte(nil), v.Hash...)
 	return &clone
-}
-
-// BindingKey returns a private copy of the 32-byte derived verifier hash for
-// configuring in-memory account-binding authority.
-func (v *AccessTokenVerifier) BindingKey() []byte {
-	if validateAccessTokenVerifier(v) != nil {
-		return nil
-	}
-	return append([]byte(nil), v.Hash...)
 }
 
 func validAccessToken(token string) bool {
@@ -508,34 +419,6 @@ func (v *AccessTokenVerifier) VerifyAccessToken(token string) bool {
 	return subtle.ConstantTimeCompare(actual, v.Hash) == 1
 }
 
-func canonicalProviderUserID(userID string) (string, error) {
-	canonical := strings.TrimSpace(userID)
-	if canonical == "" || !utf8.ValidString(canonical) || strings.IndexByte(canonical, 0) >= 0 {
-		return "", ErrAccountChanged
-	}
-	return canonical, nil
-}
-
-func accountBindingFor(bindingKey []byte, userID string) ([]byte, error) {
-	canonical, err := canonicalProviderUserID(userID)
-	if err != nil || len(bindingKey) != sha256.Size {
-		return nil, ErrAccountChanged
-	}
-	mac := hmac.New(sha256.New, bindingKey)
-	_, _ = mac.Write([]byte(accountBindingDomain))
-	_, _ = mac.Write([]byte(canonical))
-	return mac.Sum(nil), nil
-}
-
-func matchesAccountBinding(binding, bindingKey []byte, userID string) bool {
-	expected, err := accountBindingFor(bindingKey, userID)
-	if err != nil || len(binding) != sha256.Size {
-		return false
-	}
-	defer wipeBytes(expected)
-	return subtle.ConstantTimeCompare(binding, expected) == 1
-}
-
 func wipeBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
@@ -548,23 +431,18 @@ func wipeBytes(value []byte) {
 type PersistentState struct {
 	InstallationID      string
 	AccessTokenVerifier *AccessTokenVerifier
-	Subscription        SubscriptionAuthority
 	Preferences         Preferences
-	LastGood            LastGoodState
 	ActiveSession       *RuntimeSnapshot `json:"-"`
 }
 
 func (p PersistentState) Clone() PersistentState {
 	p.AccessTokenVerifier = p.AccessTokenVerifier.clone()
-	p.Subscription = p.Subscription.clone()
 	p.Preferences = p.Preferences.clone()
-	p.LastGood = p.LastGood.clone()
 	p.ActiveSession = p.ActiveSession.Clone()
 	return p
 }
 
-// AccessTokenInitialized reports whether setup has permanently claimed this
-// installation. There is intentionally no reset operation.
+// AccessTokenInitialized reports whether setup has claimed this installation.
 func (p PersistentState) AccessTokenInitialized() bool {
 	return validateAccessTokenVerifier(p.AccessTokenVerifier) == nil
 }
@@ -590,83 +468,57 @@ func (p PersistentState) VerifyAccessToken(token string) bool {
 	return p.AccessTokenVerifier.VerifyAccessToken(token)
 }
 
-// DeriveAccountBinding computes the durable subscription path token for userID.
-func (p PersistentState) DeriveAccountBinding(userID string) ([]byte, error) {
-	if !p.AccessTokenInitialized() {
-		return nil, ErrAccountChanged
-	}
-	return accountBindingFor(p.AccessTokenVerifier.Hash, userID)
-}
-
-// MatchesAccount verifies the active durable account binding in constant time.
-func (p PersistentState) MatchesAccount(userID string) bool {
-	if !p.AccessTokenInitialized() {
-		return false
-	}
-	return matchesAccountBinding(p.Subscription.AccountBinding, p.AccessTokenVerifier.Hash, userID)
-}
-
-// NewPersistentState creates an uninitialized installation with fresh local
-// selector and proxy keys. Setup and account login bind it later.
+// NewPersistentState creates an uninitialized installation.
 func NewPersistentState() (PersistentState, error) {
 	installation, err := randomInstallationID()
 	if err != nil {
 		return PersistentState{}, err
 	}
-	authority, err := newSubscriptionAuthority(time.Now().UTC())
-	if err != nil {
-		return PersistentState{}, err
-	}
 	return PersistentState{
 		InstallationID: installation,
-		Subscription:   authority,
 		Preferences:    Preferences{ExcludedNodeIDs: make(map[string]bool)},
 	}, nil
 }
 
-func newSubscriptionAuthority(activatedAt time.Time) (SubscriptionAuthority, error) {
-	selectorKey, err := randomBytes(32)
-	if err != nil {
-		return SubscriptionAuthority{}, err
+// Identity derives the immutable local credential authority from the verifier.
+func (p PersistentState) Identity() (*identity.Identity, error) {
+	var hash []byte
+	if p.AccessTokenInitialized() {
+		hash = p.AccessTokenVerifier.Hash
 	}
-	proxyKey, err := randomBytes(32)
-	if err != nil {
-		wipeBytes(selectorKey)
-		return SubscriptionAuthority{}, err
-	}
-	return SubscriptionAuthority{SelectorKey: selectorKey, ProxyAuthKey: proxyKey, ActivatedAt: activatedAt.UTC()}, nil
+	return identity.New(hash, p.InstallationID)
 }
 
-// EnsureSubscriptionAccountBinding keeps credentials stable for the same
-// account. A changed account receives fresh selector/proxy keys, a new binding,
-// and no credential-bearing cached subscription state.
-func EnsureSubscriptionAccountBinding(p *PersistentState, userID string, now time.Time) (bool, error) {
-	if p == nil || !p.AccessTokenInitialized() || validateSubscriptionAuthority(p.Subscription) != nil {
-		return false, ErrAccountChanged
+// ChangeAccessToken rotates only local access authority, not provider sessions.
+func (p *PersistentState) ChangeAccessToken(current, next string) error {
+	if p == nil || !p.VerifyAccessToken(current) {
+		return ErrInvalidAccessToken
 	}
-	binding, err := p.DeriveAccountBinding(userID)
+	if strings.TrimSpace(current) == strings.TrimSpace(next) {
+		return ErrInvalidNextAccessToken
+	}
+	verifier, err := NewAccessTokenVerifier(next)
 	if err != nil {
-		return false, err
+		return fmt.Errorf("%w: %w", ErrInvalidNextAccessToken, err)
 	}
-	defer wipeBytes(binding)
-	if len(p.Subscription.AccountBinding) == 0 {
-		p.Subscription.AccountBinding = append([]byte(nil), binding...)
-		return false, nil
+	p.AccessTokenVerifier = verifier
+	return nil
+}
+
+// BuildSelectors derives a live username map without persisting credentials.
+func BuildSelectors(nodes []Node, authority *identity.Identity) (map[string]NodeRef, error) {
+	selectors := make(map[string]NodeRef, len(nodes))
+	for _, node := range nodes {
+		credentials, available := authority.Credentials(node.Route())
+		if !available {
+			return nil, identity.ErrInvalidKey
+		}
+		if _, duplicate := selectors[credentials.Username]; duplicate {
+			return nil, fmt.Errorf("%w: duplicate node route", ErrInvalidSnapshot)
+		}
+		selectors[credentials.Username] = NodeRef{NodeID: node.ID}
 	}
-	if subtle.ConstantTimeCompare(p.Subscription.AccountBinding, binding) == 1 {
-		return false, nil
-	}
-	next, err := newSubscriptionAuthority(now)
-	if err != nil {
-		return false, err
-	}
-	next.AccountBinding = append([]byte(nil), binding...)
-	wipeBytes(p.Subscription.SelectorKey)
-	wipeBytes(p.Subscription.ProxyAuthKey)
-	p.Subscription = next
-	p.LastGood = LastGoodState{}
-	p.ActiveSession = nil
-	return true, nil
+	return selectors, nil
 }
 
 func validatePreferences(preferences Preferences) error {
@@ -692,75 +544,12 @@ func ValidatePersistentState(p PersistentState) error {
 	if p.AccessTokenVerifier != nil && validateAccessTokenVerifier(p.AccessTokenVerifier) != nil {
 		return fmt.Errorf("invalid access token verifier")
 	}
-	if err := validateSubscriptionAuthority(p.Subscription); err != nil {
-		return err
-	}
-	if len(p.Subscription.AccountBinding) != 0 && p.AccessTokenVerifier == nil {
-		return fmt.Errorf("bound subscription has no access token verifier")
-	}
-	if len(p.Subscription.AccountBinding) == 0 {
-		if !lastGoodStateEmpty(p.LastGood) {
-			return fmt.Errorf("unbound subscription retains last-good state")
-		}
-		if p.ActiveSession != nil {
-			return fmt.Errorf("unbound subscription retains active session")
-		}
-	} else if err := validateLastGoodState(p.LastGood); err != nil {
-		return err
-	}
 	if p.ActiveSession != nil {
 		if err := ValidateRuntimeSnapshot(p.ActiveSession); err != nil {
 			return fmt.Errorf("invalid active session: %w", err)
 		}
-		if !p.MatchesAccount(p.ActiveSession.AccountBindingID()) {
-			return fmt.Errorf("active providers do not match durable account binding")
-		}
 	}
 	return validatePreferences(p.Preferences)
-}
-
-func validateSubscriptionAuthority(g SubscriptionAuthority) error {
-	if g.ActivatedAt.IsZero() || len(g.SelectorKey) != sha256.Size || len(g.ProxyAuthKey) != sha256.Size || (len(g.AccountBinding) != 0 && len(g.AccountBinding) != sha256.Size) {
-		return fmt.Errorf("invalid subscription credential epoch")
-	}
-	return nil
-}
-
-func lastGoodStateEmpty(lastGood LastGoodState) bool {
-	return lastGood.CreatedAt.IsZero() && len(lastGood.Nodes) == 0 && lastGood.RenderedSubscription == ""
-}
-
-func validateLastGoodState(lastGood LastGoodState) error {
-	if lastGoodStateEmpty(lastGood) {
-		return nil
-	}
-	if lastGood.CreatedAt.IsZero() || len(lastGood.Nodes) == 0 || lastGood.RenderedSubscription == "" {
-		return fmt.Errorf("incomplete last-good state")
-	}
-	if err := validatePersistedNodes(lastGood.Nodes); err != nil {
-		return err
-	}
-	return validateRenderedSubscription(lastGood.RenderedSubscription, lastGood.Nodes)
-}
-
-func validatePersistedNodes(nodes []PersistedNode) error {
-	if len(nodes) == 0 || len(nodes) > maxPersistedNodes {
-		return fmt.Errorf("invalid persisted node count")
-	}
-	ids := make(map[string]struct{}, len(nodes))
-	for _, persisted := range nodes {
-		if persisted.Selector == "" {
-			return fmt.Errorf("invalid persisted node selector")
-		}
-		if persisted.ID == "" || !provider.ID(persisted.Provider).Valid() || persisted.Host == "" || persisted.Port == 0 {
-			return fmt.Errorf("invalid persisted node")
-		}
-		if _, exists := ids[persisted.ID]; exists {
-			return fmt.Errorf("duplicate persisted node id")
-		}
-		ids[persisted.ID] = struct{}{}
-	}
-	return nil
 }
 
 // ValidateNode checks the non-secret structural fields shared by runtime and
@@ -768,45 +557,6 @@ func validatePersistedNodes(nodes []PersistedNode) error {
 func ValidateNode(node Node) error {
 	if node.ID == "" || !node.Provider.Valid() || !node.Protocol.Valid() || node.AuthorityID == "" || node.Host == "" || node.Port == 0 || strings.IndexByte(string(node.Provider), 0) >= 0 || strings.IndexByte(string(node.Protocol), 0) >= 0 || strings.IndexByte(node.Host, 0) >= 0 {
 		return fmt.Errorf("invalid node")
-	}
-	return nil
-}
-
-func validateRenderedSubscription(body string, nodes []PersistedNode) error {
-	if len(body) == 0 || len(body) > maxRenderedSubscriptionBytes {
-		return fmt.Errorf("invalid rendered subscription size")
-	}
-	decoded, err := base64.StdEncoding.DecodeString(body)
-	if err != nil || base64.StdEncoding.EncodeToString(decoded) != body || !utf8.Valid(decoded) || len(decoded) == 0 || decoded[len(decoded)-1] != '\n' {
-		return fmt.Errorf("invalid rendered subscription")
-	}
-	eligible, unexcludedEligible := 0, 0
-	for _, node := range nodes {
-		if node.Eligible {
-			eligible++
-			if !node.Excluded {
-				unexcludedEligible++
-			}
-		}
-	}
-	if eligible == 0 {
-		return fmt.Errorf("rendered subscription has no eligible nodes")
-	}
-	lines := strings.Split(string(decoded[:len(decoded)-1]), "\n")
-	if len(lines) != eligible && len(lines) != unexcludedEligible {
-		return fmt.Errorf("rendered subscription node count mismatch")
-	}
-	for _, line := range lines {
-		if line == "" || strings.IndexByte(line, '\r') >= 0 {
-			return fmt.Errorf("invalid rendered subscription link")
-		}
-		link, err := url.Parse(line)
-		if err != nil || link.String() != line || link.Scheme != "socks5" || link.Opaque != "" || link.Host == "" || link.Path != "" || link.RawQuery != "" || link.User == nil || link.User.Username() == "" {
-			return fmt.Errorf("invalid rendered subscription link")
-		}
-		if password, ok := link.User.Password(); !ok || password == "" {
-			return fmt.Errorf("invalid rendered subscription link")
-		}
 	}
 	return nil
 }

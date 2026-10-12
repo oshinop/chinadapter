@@ -148,6 +148,8 @@ function describeError(error: unknown): string {
             return "Too many attempts. Wait a moment and try again.";
         if (error.problem.code === "invalid_access_token")
             return "That access token was not accepted.";
+        if (error.problem.code === "invalid_next_access_token")
+            return "Use a different access token of 16–128 bytes.";
         if (error.problem.code === "login_rejected")
             return "The provider rejected that email or password.";
         return error.problem.detail || error.problem.title;

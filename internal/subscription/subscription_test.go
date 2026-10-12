@@ -16,8 +16,8 @@ func TestSubscriptionMetadataHasNoFetchProof(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	defer store.Close()
-	if _, err := store.LoadOrCreate(); err != nil {
+	defer store.Close(t.Context())
+	if _, err := store.LoadOrCreate(t.Context()); err != nil {
 		t.Fatal(err)
 	}
 	service, err := NewService(ServiceConfig{Store: store, SocksAddress: "127.0.0.1:10808"})

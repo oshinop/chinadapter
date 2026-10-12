@@ -8,8 +8,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
 
@@ -55,7 +55,7 @@ func (l *transientListener) Accept() (net.Conn, error) {
 
 func newAcceptTestServer(t *testing.T) *Server {
 	t.Helper()
-	registry, err := selector.NewRegistry(state.SubscriptionAuthority{SelectorKey: make([]byte, 32), ProxyAuthKey: make([]byte, 32)})
+	authority, err := identity.New(nil, "00112233445566778899aabbccddeeff")
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -63,7 +63,7 @@ func newAcceptTestServer(t *testing.T) *Server {
 	if err != nil {
 		t.Fatal(err)
 	}
-	server, err := New(Config{Snapshots: idleSnapshots{}, Selectors: registry, Providers: providers})
+	server, err := New(Config{Snapshots: idleSnapshots{}, Identity: authority, Providers: providers})
 	if err != nil {
 		t.Fatal(err)
 	}

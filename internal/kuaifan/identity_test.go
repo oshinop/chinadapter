@@ -3,19 +3,30 @@ package kuaifan
 import (
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/selector"
+	"github.com/kfadapter/kfadapter/internal/identity"
+	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
 )
 
 func TestNodeIDCanonicalPayloadAndLabelIndependence(t *testing.T) {
-	identity, err := selector.Canonicalize(selector.NodeIdentity{Provider: "wifiin", Host: "Node.Example.", Port: 11000})
+	route := identity.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: "Node.Example.", Port: 11000}
+	expected, err := identity.NodeID(route)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if got, want := nodeID(identity, "group"), "kuaifan_IZL4HC1WCgH5U2Ve"; got != want {
-		t.Fatalf("node ID = %q, want %q", got, want)
+	source := Lines{Groups: []Group{{ID: "group", Name: "old group"}}, Lines: []Line{{GroupID: "group", Host: route.Host, Port: route.Port, Label: "old line", Eligible: true}}}
+	first, err := nodesFromLines(source, wireprofile.IOSID)
+	if err != nil {
+		t.Fatal(err)
 	}
-	otherGroup := nodeID(identity, "other")
-	if otherGroup == nodeID(identity, "group") {
-		t.Fatal("group must affect node identity")
+	source.Groups[0].Name = "new group"
+	source.Lines[0].GroupID = "other group"
+	source.Lines[0].GroupName = "other display"
+	source.Lines[0].Label = "new line"
+	second, err := nodesFromLines(source, wireprofile.WindowsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(first) != 1 || len(second) != 1 || first[0].ID != expected || second[0].ID != expected {
+		t.Fatal("display labels or account authority affect node identity")
 	}
 }

@@ -1,24 +1,24 @@
 # Optional external consumer syntax example.
 #
-# kfadapter serves the account-bound subscription URL only. The consumer fetches
+# kfadapter serves the installation-bound subscription URL only. The consumer fetches
 # it according to its own configuration; no consumer service is part of this
 # deployment.
 #
-# The account-binding path token is sensitive. Create the parent directory with
+# The subscription UUID is sensitive. Create the parent directory with
 # mode 0700 and copy this file with mode 0600, for example:
 #   install -d -m 0700 /your/private/config-directory
 #   install -m 0600 deploy/dae/config.dae.template /your/private/config-directory/config.dae
 # Keep the resulting file out of source control, diagnostics, shell tracing,
 # and shared logs. After local access and provider login, copy the reusable
 # subscription URL from the authenticated UI. Replace
-# <43-char-account-binding> below with its 43-character path token.
+# <36-char-uuid> below with its lowercase canonical UUIDv8 path token.
 global {
     wan_interface: auto
     dial_mode: domain
 }
 
 subscription {
-    kfadapter: 'http-file://127.0.0.1:10809/sub/<43-char-account-binding>'
+    kfadapter: 'http-file://127.0.0.1:10809/sub/<36-char-uuid>'
 }
 
 group {

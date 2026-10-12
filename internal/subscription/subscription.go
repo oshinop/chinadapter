@@ -13,6 +13,9 @@ import (
 	"strings"
 
 	"github.com/kfadapter/kfadapter/internal/endpoint"
+	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/kfadapter/kfadapter/internal/state"
 )
 
 const (
@@ -27,14 +30,18 @@ var (
 	ErrInvalidAddress          = errors.New("subscription SOCKS address must contain a canonical numeric IP address and port")
 )
 
-// Link is the non-secret presentation data required to render one local SOCKS URI.
-// Selector and Password are derived local credentials, never provider credentials.
-type Link struct {
-	Selector string
+type link struct {
+	Username string
 	Password string
 	Name     string
 	Group    string
-	Eligible bool
+}
+
+// Filter selects presentation rows without participating in node identity.
+type Filter struct {
+	Provider provider.ID
+	Group    string
+	Name     string
 }
 
 // Metadata is safe for the ordinary authenticated browser API. It intentionally
@@ -45,20 +52,23 @@ type Metadata struct {
 }
 
 // Render emits padded Base64 of deterministic newline-delimited SOCKS5 links.
-func Render(links []Link, socksAddress string) (string, int, error) {
+// Its complete input is request-local or immutable; it has no side effects.
+func Render(nodes []state.Node, filter Filter, socksAddress string, authority *identity.Identity) (string, int, error) {
 	host, port, err := parseAddress(socksAddress)
 	if err != nil {
 		return "", 0, err
 	}
-	eligible := make([]Link, 0, len(links))
-	for _, link := range links {
-		if !link.Eligible {
+	eligible := make([]link, 0, len(nodes))
+	foldedName := strings.ToLower(filter.Name)
+	for _, node := range nodes {
+		if !node.TunnelEligible() || node.Excluded || filter.Provider != "" && node.Provider != filter.Provider || filter.Group != "" && node.Group != filter.Group || foldedName != "" && !strings.Contains(strings.ToLower(node.Name), foldedName) {
 			continue
 		}
-		if link.Selector == "" || link.Password == "" || strings.IndexByte(link.Selector, 0) >= 0 || strings.IndexByte(link.Password, 0) >= 0 {
-			return "", 0, errors.New("invalid local SOCKS credential")
+		credentials, available := authority.Credentials(node.Route())
+		if !available {
+			return "", 0, ErrSubscriptionUnavailable
 		}
-		eligible = append(eligible, link)
+		eligible = append(eligible, link{Username: credentials.Username, Password: credentials.Password, Name: node.Name, Group: node.Group})
 	}
 	if len(eligible) == 0 {
 		return "", 0, ErrNoEligibleLinks
@@ -70,12 +80,12 @@ func Render(links []Link, socksAddress string) (string, int, error) {
 		if eligible[i].Name != eligible[j].Name {
 			return eligible[i].Name < eligible[j].Name
 		}
-		return eligible[i].Selector < eligible[j].Selector
+		return eligible[i].Username < eligible[j].Username
 	})
 	var text strings.Builder
 	for _, link := range eligible {
 		u := &url.URL{
-			Scheme: "socks5", User: url.UserPassword(link.Selector, link.Password),
+			Scheme: "socks5", User: url.UserPassword(link.Username, link.Password),
 			Host: net.JoinHostPort(host, port), Fragment: link.Name,
 		}
 		text.WriteString(u.String())

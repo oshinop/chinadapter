@@ -11,8 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
 
@@ -32,25 +32,25 @@ type SnapshotSource interface {
 
 // Config defines the SOCKS listener's dependency boundaries.
 type Config struct {
-	Snapshots SnapshotSource
-	Selectors *selector.Registry
-	Providers *provider.Registry
+	Snapshots       SnapshotSource
+	Identity        *identity.Identity
+	InitialSnapshot *state.RuntimeSnapshot
+	Providers       *provider.Registry
 
 	DialContext      provider.DialContextFunc
 	HandshakeTimeout time.Duration
 	MaxConnections   int
 }
 
-// Server is a SOCKS5/RFC1929 frontend. Its selector registry is atomically
-// replaceable for subscription rotation; every established session retains
-// only a compact state tunnel pin, never a runtime snapshot.
+// Server is a SOCKS5/RFC1929 frontend. Each immutable auth map is built from
+// the current snapshot; established flows retain only a compact tunnel pin.
 type Server struct {
 	snapshots        SnapshotSource
 	providers        *provider.Registry
 	dial             provider.DialContextFunc
 	handshakeTimeout time.Duration
 	slots            chan struct{}
-	selectors        atomic.Pointer[selector.Registry]
+	credentials      atomic.Pointer[credentialRegistry]
 
 	lifecycleMu  sync.Mutex
 	listener     net.Listener
@@ -59,13 +59,26 @@ type Server struct {
 	drained      chan struct{}
 }
 
+type credentialRegistry struct {
+	identity *identity.Identity
+	nodes    map[string]struct{}
+}
+
+func (registry *credentialRegistry) authenticate(username, password string) bool {
+	if registry == nil {
+		return false
+	}
+	_, available := registry.nodes[username]
+	return available && registry.identity.AuthenticatePassword(password)
+}
+
 // New constructs a server. Listener selection belongs to the caller.
 func New(config Config) (*Server, error) {
 	if config.Snapshots == nil {
 		return nil, errors.New("socks: snapshot source is required")
 	}
-	if config.Selectors == nil {
-		return nil, errors.New("socks: selector registry is required")
+	if config.Identity == nil {
+		return nil, errors.New("socks: installation identity is required")
 	}
 	if config.Providers == nil {
 		return nil, errors.New("socks: provider registry is required")
@@ -92,17 +105,41 @@ func New(config Config) (*Server, error) {
 	drained := make(chan struct{})
 	close(drained)
 	server := &Server{snapshots: config.Snapshots, providers: config.Providers, dial: dial, handshakeTimeout: timeout, slots: make(chan struct{}, maxConnections), active: make(map[net.Conn]context.CancelFunc), drained: drained}
-	server.selectors.Store(config.Selectors)
+	if err := server.SetCredentials(config.Identity, config.InitialSnapshot); err != nil {
+		return nil, err
+	}
 	return server, nil
 }
 
-// SetSelectors atomically adopts an immutable registry containing the current
-// subscription authority. Existing TCP flows are unaffected.
-func (s *Server) SetSelectors(registry *selector.Registry) error {
-	if s == nil || registry == nil {
-		return errors.New("socks: selector registry is required")
+// SetCredentials swaps one coherent live username map and instance password.
+func (s *Server) SetCredentials(authority *identity.Identity, snapshot *state.RuntimeSnapshot) error {
+	if s == nil || authority == nil {
+		return errors.New("socks: installation identity is required")
 	}
-	s.selectors.Store(registry)
+	nodeCount := 0
+	if snapshot != nil {
+		nodeCount = len(snapshot.Nodes)
+	}
+	next := &credentialRegistry{identity: authority, nodes: make(map[string]struct{}, nodeCount)}
+	if snapshot != nil {
+		for _, node := range snapshot.Nodes {
+			if !node.TunnelEligible() {
+				continue
+			}
+			if _, available := snapshot.Providers[node.Provider]; !available {
+				continue
+			}
+			credentials, available := authority.Credentials(node.Route())
+			if !available {
+				return identity.ErrInvalidKey
+			}
+			if _, duplicate := next.nodes[credentials.Username]; duplicate {
+				return fmt.Errorf("%w: duplicate node route", state.ErrInvalidSnapshot)
+			}
+			next.nodes[credentials.Username] = struct{}{}
+		}
+	}
+	s.credentials.Store(next)
 	return nil
 }
 
@@ -313,15 +350,15 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 		return err
 	}
 
-	// Authenticate credentials first, then retain only a compact state-owned
-	// tunnel pin. No runtime snapshot or selector map escapes into this flow.
+	// Look up the username in the immutable current map before comparing the
+	// shared instance password. The flow retains only its compact tunnel pin.
 	now := time.Now()
-	registry := s.selectors.Load()
+	registry := s.credentials.Load()
 	if registry == nil {
 		_ = writeAuthStatus(client, false)
 		return state.ErrSelectorUnknown
 	}
-	authenticated := registry.AuthenticateAt(username, password, now)
+	authenticated := registry.authenticate(username, password)
 	if !authenticated {
 		_ = writeAuthStatus(client, false)
 		return state.ErrSelectorUnknown
@@ -361,19 +398,19 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 	// refresh, selector rotation, preference exclusion, or node replacement.
 	// Re-resolving returns a compact current pin and never clones a snapshot.
 	now = time.Now()
-	registry = s.selectors.Load()
+	registry = s.credentials.Load()
 	if registry == nil {
 		_ = writeReply(client, replyGeneralFailure, target{})
 		return state.ErrSelectorUnknown
 	}
-	authenticated = registry.AuthenticateAt(username, password, now)
+	authenticated = registry.authenticate(username, password)
 	if !authenticated {
 		_ = writeReply(client, replyGeneralFailure, target{})
 		return state.ErrSelectorUnknown
 	}
 	revalidatedPin, resolveErr := s.snapshots.CompactPin(username, now)
 	revalidatedNode := revalidatedPin.Node
-	if resolveErr != nil || s.selectors.Load() != registry || !samePinAuthority(pin, revalidatedPin) || !revalidatedNode.TunnelEligible() || !sameCanonicalNode(node, revalidatedNode) {
+	if resolveErr != nil || s.credentials.Load() != registry || !samePinAuthority(pin, revalidatedPin) || !revalidatedNode.TunnelEligible() || !sameCanonicalNode(node, revalidatedNode) {
 		_ = writeReply(client, replyGeneralFailure, target{})
 		if resolveErr != nil {
 			return resolveErr
@@ -409,17 +446,17 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 		if !s.snapshots.SessionCurrentPin(pin, now) {
 			return false
 		}
-		currentRegistry := s.selectors.Load()
+		currentRegistry := s.credentials.Load()
 		if currentRegistry == nil {
 			return false
 		}
-		authenticated := currentRegistry.AuthenticateAt(username, password, now)
+		authenticated := currentRegistry.authenticate(username, password)
 		if !authenticated {
 			return false
 		}
 		finalPin, resolveErr := s.snapshots.CompactPin(username, now)
 		finalNode := finalPin.Node
-		if resolveErr != nil || s.selectors.Load() != currentRegistry || !samePinAuthority(pin, finalPin) || !finalNode.TunnelEligible() || !sameCanonicalNode(node, finalNode) {
+		if resolveErr != nil || s.credentials.Load() != currentRegistry || !samePinAuthority(pin, finalPin) || !finalNode.TunnelEligible() || !sameCanonicalNode(node, finalNode) {
 			return false
 		}
 		pin, node = finalPin, finalNode
@@ -452,14 +489,14 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 }
 
 func samePinAuthority(left, right state.TunnelPin) bool {
-	return left.Authority.Protocol == right.Authority.Protocol &&
+	return left.Node.Provider == right.Node.Provider && left.Node.AuthorityID == right.Node.AuthorityID && left.Authority.Protocol == right.Authority.Protocol &&
 		subtle.ConstantTimeCompare(left.Authority.Data, right.Authority.Data) == 1
 }
 
 func sameCanonicalNode(left, right state.Node) bool {
-	leftIdentity, leftErr := selector.Canonicalize(selector.NodeIdentity{NodeID: left.ID, Provider: string(left.Provider), Host: left.Host, Port: int(left.Port)})
-	rightIdentity, rightErr := selector.Canonicalize(selector.NodeIdentity{NodeID: right.ID, Provider: string(right.Provider), Host: right.Host, Port: int(right.Port)})
-	return leftErr == nil && rightErr == nil && leftIdentity == rightIdentity
+	leftKey, leftErr := identity.NodeKey(left.Route())
+	rightKey, rightErr := identity.NodeKey(right.Route())
+	return leftErr == nil && rightErr == nil && leftKey == rightKey && left.AuthorityID == right.AuthorityID
 }
 
 func targetFromAddr(address net.Addr) target {

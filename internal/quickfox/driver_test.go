@@ -104,11 +104,13 @@ func TestQuickFoxTiersControlFeeEligibility(t *testing.T) {
 	fixture := catalogFixture()
 	feeTwo := fixture.Groups[0].Regions[0].Lines[1]
 	feeTwo.PoolID = 1218
+	feeTwo.ConnectPort++
 	feeTwo.Name = "VIP备用专线"
 	feeTwo.PoolName = feeTwo.Name
 	feeTwo.FeeType = 2
 	feeThree := fixture.Groups[0].Regions[0].Lines[1]
 	feeThree.PoolID = 1219
+	feeThree.ConnectPort += 2
 	feeThree.Name = "SVIP专线"
 	feeThree.PoolName = feeThree.Name
 	feeThree.FeeType = 3

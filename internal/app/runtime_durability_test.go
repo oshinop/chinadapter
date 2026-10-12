@@ -11,7 +11,6 @@ import (
 
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/provider/coordinator"
-	"github.com/kfadapter/kfadapter/internal/selector"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
@@ -59,30 +58,30 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	if _, err := store.LoadOrCreate(); err != nil {
+	if _, err := store.LoadOrCreate(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	persistent, err := store.Update(func(candidate *state.PersistentState) error {
+	persistent, err := store.Update(t.Context(), func(candidate *state.PersistentState) error {
 		return candidate.SetAccessToken("correct horse battery token")
 	})
 	if err != nil {
 		t.Fatal(err)
 	}
-	manager, err := state.NewManagerWithSubscription(nil, persistent.Subscription, persistent.AccessTokenVerifier.BindingKey())
+	manager, err := state.NewManager(nil)
 	if err != nil {
 		t.Fatal(err)
 	}
-	registry, err := selector.NewRegistry(persistent.Subscription)
+	authority, err := persistent.Identity()
 	if err != nil {
 		t.Fatal(err)
 	}
 	now := time.Now().UTC()
-	selectors, err := NewSelectorCoordinator(nil, registry, func() time.Time { return now })
+	credentials, err := NewCredentialCoordinator(nil, authority)
 	if err != nil {
 		t.Fatal(err)
 	}
 	mutations := &sync.Mutex{}
-	service, err := subscription.NewService(subscription.ServiceConfig{Store: store, SocksAddress: "127.0.0.1:10808", Now: func() time.Time { return now }, MutationLocker: mutations})
+	service, err := subscription.NewService(subscription.ServiceConfig{Store: store, SocksAddress: "127.0.0.1:10808"})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -93,7 +92,7 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 		t.Fatal(err)
 	}
 	fixture.coordinator, err = coordinator.New(coordinator.Config{
-		Providers: providers, Manager: manager, SelectorBuilder: selectors, MutationMu: mutations,
+		Providers: providers, Manager: manager, SelectorBuilder: credentials, MutationMu: mutations,
 		Clock: func() time.Time { return now },
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
 			return fixture.runtime.CommitControlSnapshotLocked(snapshot)
@@ -104,7 +103,7 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 	}
 	fixture.runtime, err = NewRuntime(RuntimeConfig{
 		Manager: manager, Store: store, Providers: fixture.coordinator, Subscriptions: service,
-		Selectors: selectors, MutationMu: mutations, Now: func() time.Time { return now }, DialContext: dial,
+		Credentials: credentials, MutationMu: mutations, Now: func() time.Time { return now }, DialContext: dial,
 		SocksAddress: "127.0.0.1:10808", RefreshEvery: time.Hour,
 	})
 	if err != nil {
@@ -112,7 +111,7 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 	}
 	t.Cleanup(func() {
 		fixture.runtime.Stop()
-		if err := store.Close(); err != nil {
+		if err := store.Close(t.Context()); err != nil {
 			t.Error(err)
 		}
 	})

@@ -1,6 +1,7 @@
 package web
 
 import (
+	"context"
 	"encoding/json"
 	"errors"
 	"net/http"
@@ -26,7 +27,7 @@ type fakeBrowserSessionPersistence struct {
 	deleteCalls  int
 }
 
-func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(now time.Time, max int, add func(token, csrf string, expiresAt time.Time) error) error {
+func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(_ context.Context, now time.Time, max int, add func(tokenHash []byte, csrf string, expiresAt time.Time) error) error {
 	p.mu.Lock()
 	p.restoreCalls++
 	if p.restoreErr != nil {
@@ -49,7 +50,7 @@ func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(now time.Time, ma
 		if count >= max {
 			break
 		}
-		if err := add(token, session.csrf, session.expiresAt); err != nil {
+		if err := add([]byte(token), session.csrf, session.expiresAt); err != nil {
 			return err
 		}
 		count++
@@ -57,7 +58,7 @@ func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(now time.Time, ma
 	return nil
 }
 
-func (p *fakeBrowserSessionPersistence) SaveBrowserSession(token, csrf string, expiresAt time.Time, _ int) error {
+func (p *fakeBrowserSessionPersistence) SaveBrowserSession(_ context.Context, token, csrf string, expiresAt time.Time, _ int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.saveCalls++
@@ -67,18 +68,28 @@ func (p *fakeBrowserSessionPersistence) SaveBrowserSession(token, csrf string, e
 	if p.sessions == nil {
 		p.sessions = make(map[string]persistedBrowserSession)
 	}
-	p.sessions[token] = persistedBrowserSession{csrf: csrf, expiresAt: expiresAt}
+	p.sessions[sessionKey(token)] = persistedBrowserSession{csrf: csrf, expiresAt: expiresAt}
 	return nil
 }
 
-func (p *fakeBrowserSessionPersistence) DeleteBrowserSession(token string) error {
+func (p *fakeBrowserSessionPersistence) DeleteBrowserSession(_ context.Context, tokenHash []byte) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.deleteCalls++
 	if p.deleteErr != nil {
 		return p.deleteErr
 	}
-	delete(p.sessions, token)
+	delete(p.sessions, string(tokenHash))
+	return nil
+}
+
+func (p *fakeBrowserSessionPersistence) DeleteAllBrowserSessions(context.Context) error {
+	p.mu.Lock()
+	defer p.mu.Unlock()
+	if p.deleteErr != nil {
+		return p.deleteErr
+	}
+	clear(p.sessions)
 	return nil
 }
 
@@ -140,7 +151,7 @@ func TestBrowserSessionLockRevokesDurablyAcrossAPIRecreation(t *testing.T) {
 		t.Fatalf("access lock = %d %#v", locked.Code, locked.Header())
 	}
 	persistence.mu.Lock()
-	_, persisted := persistence.sessions[cookie.Value]
+	_, persisted := persistence.sessions[sessionKey(cookie.Value)]
 	persistence.mu.Unlock()
 	if persisted {
 		t.Fatal("locked browser session remains persisted")
@@ -177,7 +188,7 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 		now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
 		secret := strings.Repeat("A", 43)
 		persistence := &fakeBrowserSessionPersistence{sessions: map[string]persistedBrowserSession{
-			secret: {csrf: secret, expiresAt: now.Add(2 * time.Hour)},
+			sessionKey(secret): {csrf: secret, expiresAt: now.Add(2 * time.Hour)},
 		}}
 		config := testConfig()
 		config.Now = func() time.Time { return now }

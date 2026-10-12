@@ -12,6 +12,20 @@ function jsonResponse(payload: unknown) {
 }
 
 describe("browser boundary", () => {
+  it("changes the token with CSRF and adopts the replacement session", async () => {
+    const fetchMock = vi.fn()
+      .mockResolvedValueOnce(jsonResponse({ csrfToken: "csrf-rotated" }))
+      .mockResolvedValueOnce(jsonResponse({}));
+    vi.stubGlobal("fetch", fetchMock);
+    const api = new ApiClient();
+    api.setCsrfToken("csrf-original");
+    await api.changeAccessToken("original-token-12345", "replacement-token-12345");
+    await api.refresh("kuaifan");
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/access/token");
+    expect(fetchMock.mock.calls[0][1].headers["X-CSRF-Token"]).toBe("csrf-original");
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ current: "original-token-12345", next: "replacement-token-12345" });
+    expect(fetchMock.mock.calls[1][1].headers["X-CSRF-Token"]).toBe("csrf-rotated");
+  });
   it("uses same-origin API paths with credentials and never writes browser storage", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(jsonResponse({ initialized: true, authenticated: true, csrfToken: "csrf-test" }))
