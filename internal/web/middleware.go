@@ -38,7 +38,7 @@ func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
 		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
 		return
 	}
-	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api" {
+	if r.URL.Path != "/healthz" && !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api" {
 		a.serveAsset(w, r)
 		return
 	}
