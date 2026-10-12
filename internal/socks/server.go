@@ -429,7 +429,14 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 		return err
 	}
 	var association *udpAssociation
+	var datagrams provider.DatagramTransport
 	if command == commandUDP {
+		capable, ok := transport.(provider.DatagramTransport)
+		if !ok {
+			_ = writeReply(client, replyCommandUnsupported, target{})
+			return nil
+		}
+		datagrams = capable
 		association, err = newUDPAssociation(client, destination)
 		if err != nil {
 			code := replyGeneralFailure
@@ -471,7 +478,7 @@ func (s *Server) HandleConn(ctx context.Context, client net.Conn) error {
 		return nil
 	}
 	if association != nil {
-		err = transport.RelayDatagrams(ctx, provider.DatagramRequest{
+		err = datagrams.RelayDatagrams(ctx, provider.DatagramRequest{
 			Dial: s.dial, Control: client, Packets: association, NodeHost: node.Host, NodePort: node.Port,
 			Authority: pin.Authority.Data, HandshakeTimeout: s.handshakeTimeout, Admit: admit, Ready: readyRelay,
 		})

@@ -32,6 +32,9 @@ var (
 	// session. Only explicit rejection codes map here; every other driver error
 	// is transient and must never delete provider state.
 	ErrSessionRejected = errors.New("provider: session rejected by upstream")
+	// ErrAddressUnsupported means the transport cannot reach the requested
+	// destination address type. SOCKS maps it to reply 0x08.
+	ErrAddressUnsupported = errors.New("provider: destination address type unsupported")
 )
 
 // ID is a stable provider implementation identifier, such as "kuaifan".

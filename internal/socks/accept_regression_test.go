@@ -29,10 +29,6 @@ func (stubTransport) RelayStream(context.Context, provider.RelayRequest) error {
 	return errors.New("unused")
 }
 
-func (stubTransport) RelayDatagrams(context.Context, provider.DatagramRequest) error {
-	return errors.New("unused")
-}
-
 // transientListener fails the first transient accepts with descriptor
 // exhaustion, then delegates to the real listener and signals when it is reached.
 type transientListener struct {

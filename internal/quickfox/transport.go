@@ -101,10 +101,6 @@ func (transport *Transport) RelayStream(ctx context.Context, request provider.Re
 	return relayXOR(ctx, request.Client, upstream)
 }
 
-func (*Transport) RelayDatagrams(context.Context, provider.DatagramRequest) error {
-	return errors.New("quickfox: UDP relay is unavailable")
-}
-
 func (transport *Transport) resolveTarget(ctx context.Context, host string, timeout time.Duration) (netip.Addr, error) {
 	if address, err := netip.ParseAddr(host); err == nil {
 		if address.Is4() {

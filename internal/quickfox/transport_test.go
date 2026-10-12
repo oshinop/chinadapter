@@ -129,10 +129,3 @@ func TestTransportRelayStream(t *testing.T) {
 		t.Fatal(err)
 	}
 }
-
-func TestTransportRejectsDatagrams(t *testing.T) {
-	t.Parallel()
-	if err := NewTransport().RelayDatagrams(context.Background(), provider.DatagramRequest{}); err == nil {
-		t.Fatal("RelayDatagrams unexpectedly succeeded")
-	}
-}

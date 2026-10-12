@@ -55,10 +55,17 @@ type DatagramRequest struct {
 	Ready            func(net.Addr) error
 }
 
-// Transport owns all provider-specific handshake, encryption, stream relay,
-// and datagram framing for one protocol.
+// Transport owns all provider-specific handshake, encryption, and stream relay
+// for one protocol.
 type Transport interface {
 	Protocol() Protocol
 	RelayStream(context.Context, RelayRequest) error
+}
+
+// DatagramTransport is the optional capability for SOCKS UDP ASSOCIATE.
+// Transports without it are TCP-only; SOCKS replies 0x07 before binding a
+// UDP socket for them.
+type DatagramTransport interface {
+	Transport
 	RelayDatagrams(context.Context, DatagramRequest) error
 }
