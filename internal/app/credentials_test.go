@@ -17,7 +17,7 @@ import (
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/accounts"
-	"github.com/kfadapter/kfadapter/internal/identity"
+	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -40,8 +40,8 @@ type stableDriver struct {
 func (driver *stableDriver) ID() provider.ID { return driver.id }
 func (driver *stableDriver) Login(_ context.Context, credentials provider.Credentials) (provider.Snapshot, error) {
 	protocol := provider.Protocol(string(driver.id) + "-native")
-	route := identity.Route{Provider: driver.id, Protocol: protocol, Host: string(driver.id) + ".example.test", Port: 11000}
-	id, err := identity.NodeID(route)
+	route := provider.Route{Provider: driver.id, Protocol: protocol, Host: string(driver.id) + ".example.test", Port: 11000}
+	id, err := provider.NodeID(route)
 	if err != nil {
 		return provider.Snapshot{}, err
 	}
@@ -171,7 +171,7 @@ func stableSession(t *testing.T, response *httptest.ResponseRecorder) (*http.Coo
 	}
 	return cookies[0], body.CSRFToken
 }
-func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]identity.Credentials) {
+func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]credentialspkg.Credentials) {
 	t.Helper()
 	subscriptionURL, err := harness.service.SubscriptionURL("http://127.0.0.1:10809")
 	if err != nil {
@@ -189,15 +189,15 @@ func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]ide
 	if err != nil {
 		t.Fatal(err)
 	}
-	result := make(map[string]identity.Credentials)
+	result := make(map[string]credentialspkg.Credentials)
 	for _, line := range strings.Fields(string(decoded)) {
 		uri, err := url.Parse(line)
 		if err != nil {
 			t.Fatal(err)
 		}
 		password, _ := uri.User.Password()
-		credentials := identity.Credentials{Username: uri.User.Username(), Password: password}
-		if !identity.ValidUUID(password) {
+		credentials := credentialspkg.Credentials{Username: uri.User.Username(), Password: password}
+		if !credentialspkg.ValidUUID(password) {
 			t.Fatal("instance password is not UUIDv8")
 		}
 		result[credentials.Username] = credentials
@@ -207,7 +207,7 @@ func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]ide
 		if err != nil {
 			t.Fatal(err)
 		}
-		if result[details.SocksUsername] != (identity.Credentials{Username: details.SocksUsername, Password: details.SocksPassword}) {
+		if result[details.SocksUsername] != (credentialspkg.Credentials{Username: details.SocksUsername, Password: details.SocksPassword}) {
 			t.Fatal("node-details and subscription credentials disagree")
 		}
 	}
@@ -295,7 +295,7 @@ func TestStableCredentialsAcrossAccountCatalogAndRestart(t *testing.T) {
 }
 
 // Authenticate over RFC 1929 without issuing CONNECT or contacting a provider.
-func stableSOCKSAuth(t *testing.T, server *socks.Server, credentials identity.Credentials) bool {
+func stableSOCKSAuth(t *testing.T, server *socks.Server, credentials credentialspkg.Credentials) bool {
 	t.Helper()
 	client, adapter := net.Pipe()
 	defer client.Close()

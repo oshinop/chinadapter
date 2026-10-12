@@ -19,7 +19,7 @@ No captured or statically recoverable evidence defines a second Fanster wire pro
 | `Payload/快帆.app/PlugIns/tunnel.appex/tunnel` | 709,680 bytes | `1109a077febec32895c329aad56b7149029bb4a3e272af6e00c447daff8f0e5e` |
 | `Payload/快帆.app/Frameworks/Tquic.framework/Tquic` | 2,728,048 bytes | `485634306c20843c13721358054641c758514d0203e1dafc3dedfec272d5795d` |
 
-The capture is a concatenated tnetstring mitmproxy export. It contains 70 HTTP flows: 64 to `ws.kuaifan.co`, four to `track.kuaifan.co`, and two to `rs.kuaifan.co`. KuaiFan request and response bodies were decoded with the AES-CBC/PBKDF2 compatibility codec implemented in `internal/kuaifan/codec.go`. Credentials, tokens, and installation identifiers are intentionally omitted below.
+The capture is a concatenated tnetstring mitmproxy export. It contains 70 HTTP flows: 64 to `ws.kuaifan.co`, four to `track.kuaifan.co`, and two to `rs.kuaifan.co`. KuaiFan request and response bodies were decoded with the AES-CBC/PBKDF2 compatibility codec implemented in `internal/provider/kuaifan/codec.go`. Credentials, tokens, and installation identifiers are intentionally omitted below.
 
 ## Authentication and session flow
 
@@ -157,7 +157,7 @@ A separate Fanster transport must not be fabricated from the Tquic framework nam
 KuaiFan-specific code resides under one boundary with separate profile implementations:
 
 ```text
-internal/kuaifan/
+internal/provider/kuaifan/
   client.go           shared hardened HTTPS transport and strict parsing
   client_profile.go   control-flow adapter contract
   ios_client.go       iOS login, refresh, authority, and catalog flow
@@ -172,7 +172,7 @@ internal/kuaifan/
   wifiin/             observed Fanster-branded WIFIIN TCP and UDP-over-TCP wire
 ```
 
-`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
+`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/provider/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
 
 ## External references
 

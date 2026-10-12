@@ -3,13 +3,13 @@ package kuaifan
 import (
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
-	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
+	"github.com/kfadapter/kfadapter/internal/provider"
+	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
 )
 
 func TestNodeIDCanonicalPayloadAndLabelIndependence(t *testing.T) {
-	route := identity.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: "Node.Example.", Port: 11000}
-	expected, err := identity.NodeID(route)
+	route := provider.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: "Node.Example.", Port: 11000}
+	expected, err := provider.NodeID(route)
 	if err != nil {
 		t.Fatal(err)
 	}

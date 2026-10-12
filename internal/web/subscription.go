@@ -5,7 +5,7 @@ import (
 	"net/http"
 	"strings"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 )
 
 func (a *API) subscriptionMetadata(w http.ResponseWriter, r *http.Request) {
@@ -45,7 +45,7 @@ func (a *API) baseURL(requestHost string) string {
 }
 
 func subscriptionPath(requestPath string) (string, bool) {
-	return identity.ParseSubscriptionPath(requestPath)
+	return credentials.ParseSubscriptionPath(requestPath)
 }
 
 // Subscription paths retain the deliberately empty failure contract, including

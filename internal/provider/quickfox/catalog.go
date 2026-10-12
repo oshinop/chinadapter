@@ -4,7 +4,6 @@ import (
 	"fmt"
 	"net/netip"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -87,7 +86,7 @@ func catalogNode(group lineGroup, region lineRegion, line linePool, tier string)
 	if err != nil || !address.Is4() || address.String() != line.ConnectIP || line.ConnectPort == 0 {
 		return provider.Node{}, ErrInvalidLine
 	}
-	id, err := identity.NodeID(identity.Route{Provider: ProviderID, Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort})
+	id, err := provider.NodeID(provider.Route{Provider: ProviderID, Protocol: NativeProtocol, Host: line.ConnectIP, Port: line.ConnectPort})
 	if err != nil {
 		return provider.Node{}, fmt.Errorf("%w: node identity: %w", ErrInvalidLine, err)
 	}

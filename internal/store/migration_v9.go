@@ -6,7 +6,6 @@ import (
 	"errors"
 	"fmt"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -41,11 +40,11 @@ func migrateSQLiteV8ToV9(ctx context.Context, db *sql.DB) error {
 		if port < 1 || port > 65535 {
 			return corruptDatabase(errors.New("invalid migration node port"))
 		}
-		route, err := identity.Canonicalize(identity.Route{Provider: provider.ID(rawProvider), Protocol: provider.Protocol(rawProtocol), Host: host, Port: uint16(port)})
+		route, err := provider.Canonicalize(provider.Route{Provider: provider.ID(rawProvider), Protocol: provider.Protocol(rawProtocol), Host: host, Port: uint16(port)})
 		if err != nil {
 			return corruptDatabase(fmt.Errorf("migrate node route: %w", err))
 		}
-		node.id, err = identity.NodeID(route)
+		node.id, err = provider.NodeID(route)
 		if err != nil {
 			return corruptDatabase(err)
 		}

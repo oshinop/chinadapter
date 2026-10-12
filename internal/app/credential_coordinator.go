@@ -4,13 +4,13 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
 
 // CredentialApplier atomically replaces the live username lookup map in SOCKS.
 type CredentialApplier interface {
-	SetCredentials(*identity.Identity, *state.RuntimeSnapshot) error
+	SetCredentials(*credentials.Identity, *state.RuntimeSnapshot) error
 }
 
 // CredentialCoordinator shares one immutable installation identity with the
@@ -18,10 +18,10 @@ type CredentialApplier interface {
 // it; only access-token setup or change installs another identity.
 type CredentialCoordinator struct {
 	socks    CredentialApplier
-	identity atomic.Pointer[identity.Identity]
+	identity atomic.Pointer[credentials.Identity]
 }
 
-func NewCredentialCoordinator(socks CredentialApplier, authority *identity.Identity) (*CredentialCoordinator, error) {
+func NewCredentialCoordinator(socks CredentialApplier, authority *credentials.Identity) (*CredentialCoordinator, error) {
 	if authority == nil {
 		return nil, errors.New("app: installation identity is required")
 	}
@@ -29,7 +29,7 @@ func NewCredentialCoordinator(socks CredentialApplier, authority *identity.Ident
 	coordinator.identity.Store(authority)
 	return coordinator, nil
 }
-func (coordinator *CredentialCoordinator) Identity() *identity.Identity {
+func (coordinator *CredentialCoordinator) Identity() *credentials.Identity {
 	if coordinator == nil {
 		return nil
 	}
@@ -41,7 +41,7 @@ func (coordinator *CredentialCoordinator) Build(nodes []state.Node) (map[string]
 
 // Install derives a coherent snapshot map and swaps local credential authority.
 // The caller holds the shared short mutation lock, never a provider I/O lock.
-func (coordinator *CredentialCoordinator) Install(authority *identity.Identity, snapshot *state.RuntimeSnapshot) (*state.RuntimeSnapshot, error) {
+func (coordinator *CredentialCoordinator) Install(authority *credentials.Identity, snapshot *state.RuntimeSnapshot) (*state.RuntimeSnapshot, error) {
 	if coordinator == nil || authority == nil {
 		return nil, errors.New("app: installation identity is required")
 	}

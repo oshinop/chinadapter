@@ -5,9 +5,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
-	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
 	"github.com/kfadapter/kfadapter/internal/provider"
+	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
 )
 
 func aggregateProviderAccount(display string, profiles [2]completeProfile, now time.Time) (provider.Account, error) {
@@ -127,11 +126,11 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 		if !line.Eligible {
 			continue
 		}
-		route, err := identity.Canonicalize(identity.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: line.Host, Port: line.Port})
+		route, err := provider.Canonicalize(provider.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: line.Host, Port: line.Port})
 		if err != nil {
 			return nil, fmt.Errorf("%w: canonical node identity: %w", ErrSchema, err)
 		}
-		id, err := identity.NodeID(route)
+		id, err := provider.NodeID(route)
 		if err != nil {
 			return nil, fmt.Errorf("%w: node identity: %w", ErrSchema, err)
 		}

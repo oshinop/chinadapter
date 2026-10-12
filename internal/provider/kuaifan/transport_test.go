@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/kuaifan/wifiin"
 	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
 )
 
 const testTunnelPassword = "loopback-password"

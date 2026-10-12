@@ -11,8 +11,8 @@ import (
 	"testing"
 	"time"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
 	"github.com/kfadapter/kfadapter/internal/provider"
+	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
 )
 
 func TestRetryRetriesPerRequestTimeouts(t *testing.T) {

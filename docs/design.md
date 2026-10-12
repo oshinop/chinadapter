@@ -78,7 +78,7 @@ statuses; it is not an independently edited transition graph:
 | `expired` | Not entered. Snapshots are never expired by time; the value is kept for API and frontend compatibility | Login begins (`authenticating`) or logout (`signed_out`) | None while unreachable |
 | `error` | No usable aggregate remains after an operation or publication error | Login begins (`authenticating`) or logout (`signed_out`) | Keep process liveness but reject control/data operations that require a session |
 
-`internal/identity` calculates the installation key and the two domain-separated UUIDs:
+`internal/credentials` calculates the installation key, domain-separated UUIDs, and SOCKS usernames; `internal/provider/route.go` owns the shared route identity, canonical node key, and node ID construction:
 
 ```text
 instanceKey = HMAC-SHA256(AccessTokenVerifier.derivedHash,
@@ -109,7 +109,7 @@ Upgrading from v8 changes the subscription URL and SOCKS credentials once. Copy 
 
 `internal/provider` defines provider-neutral lifecycle, snapshot, node, authority, registry, and transport contracts. A driver owns one provider's login and refresh protocol and returns a complete `provider.Snapshot`; refresh state and authority bytes remain opaque outside the originating driver and matching transport. The coordinator in `internal/accounts` serializes mutations, merges the changed provider snapshot with the other current providers, builds one collision-free selector map, and publishes the aggregate transactionally; the same package schedules independent provider refreshes. Provider IDs select lifecycle drivers; protocol IDs independently select SOCKS transports.
 
-`internal/accounts`, `internal/state`, `internal/store`, `internal/identity`, `internal/subscription`, `internal/app`, `internal/web`, and `internal/socks` validate and route generic provider data only. They neither decode provider refresh state nor interpret authority bytes. A node references an authority in its own provider snapshot with the same protocol, and route-derived node IDs are globally unique. Schema v9 persists the normalized catalog but never derived usernames or rendered bodies.
+`internal/accounts`, `internal/state`, `internal/store`, `internal/credentials`, `internal/subscription`, `internal/app`, `internal/web`, and `internal/socks` validate and route generic provider data only. They neither decode provider refresh state nor interpret authority bytes. A node references an authority in its own provider snapshot with the same protocol, and route-derived node IDs are globally unique. Schema v9 persists the normalized catalog but never derived usernames or rendered bodies.
 
 Provider node IDs use the common `nodeKey` and SHA-256 construction above, prefixed by the provider ID. Hosts are canonical IP addresses or lowercase IDNA DNS names without a trailing dot. Protocols separate distinct transports at the same endpoint. Repeated routes collapse even when group, region, pool, or line labels differ; iOS remains preferred over Windows when KuaiFan profiles expose the same route.
 
@@ -119,7 +119,7 @@ The provider-neutral account contract is `{Tier, SubscriptionActive, Subscriptio
 
 ### 3.2 KuaiFan transaction boundary
 
-All KuaiFan-specific control, fingerprint, encryption, refresh coordination, and tunnel-wire code lives under `internal/kuaifan`. `internal/kuaifan/profile` contains the standalone iOS and Windows wire-profile definitions and deterministic/randomized request builders. The application layer supplies only transient account credentials and a protected random installation ID; it does not choose a client profile, construct device fields, encrypt provider requests, parse provider responses, or decode WIFIIN authority.
+All KuaiFan-specific control, fingerprint, encryption, refresh coordination, and tunnel-wire code lives under `internal/provider/kuaifan`. `internal/provider/kuaifan/profile` contains the standalone iOS and Windows wire-profile definitions and deterministic/randomized request builders. The application layer supplies only transient account credentials and a protected random installation ID; it does not choose a client profile, construct device fields, encrypt provider requests, parse provider responses, or decode WIFIIN authority.
 
 The KuaiFan driver runs two immutable control clients: the captured iOS 4.18.4 profile and the recovered Windows 4.3.30 profile. Both reuse hardened HTTPS transport, bounded control codecs, line normalization, and catalog merge; their fingerprints, request schemas, refresh rules, authority parsing, and provider extensions remain separate. Both branches must return the same provider user ID. The account tier is `VIP` only when both profiles report VIP and the earlier of their exact expirations is still in the future; otherwise it is `Standard`, inactive, and has no displayed expiration. A transient failure in either branch leaves the prior complete provider snapshot current; no provisional session, authority, partial catalog, or mixed-generation node set is published. When exactly one profile's session is rejected, the driver publishes a complete snapshot from the surviving profile and keeps the rejected profile's state for a later retry; when both are rejected, refresh returns `provider.ErrSessionRejected`.
 
@@ -129,7 +129,7 @@ Catalog merge gives iOS priority for routes present in both profiles and appends
 
 ### 3.3 QuickFox transaction boundary
 
-All QuickFox-specific HTTPS, encrypted-envelope, catalog, membership, authority, and native-relay code lives under `internal/quickfox`. Its stable IDs are provider `quickfox`, protocol `quickfox-native`, and authority `native`. The provider-neutral layers treat all QuickFox refresh and authority bytes as opaque.
+All QuickFox-specific HTTPS, encrypted-envelope, catalog, membership, authority, and native-relay code lives under `internal/provider/quickfox`. Its stable IDs are provider `quickfox`, protocol `quickfox-native`, and authority `native`. The provider-neutral layers treat all QuickFox refresh and authority bytes as opaque.
 
 ```mermaid
 sequenceDiagram

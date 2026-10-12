@@ -7,7 +7,7 @@ import (
 	"net/http"
 	"time"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
+	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
 )
 
 func retry[T any](ctx context.Context, driver *Driver, call func() (T, error)) (T, error) {

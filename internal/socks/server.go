@@ -11,7 +11,7 @@ import (
 	"syscall"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
@@ -33,7 +33,7 @@ type SnapshotSource interface {
 // Config defines the SOCKS listener's dependency boundaries.
 type Config struct {
 	Snapshots       SnapshotSource
-	Identity        *identity.Identity
+	Identity        *credentialspkg.Identity
 	InitialSnapshot *state.RuntimeSnapshot
 	Providers       *provider.Registry
 
@@ -60,7 +60,7 @@ type Server struct {
 }
 
 type credentialRegistry struct {
-	identity *identity.Identity
+	identity *credentialspkg.Identity
 	nodes    map[string]struct{}
 }
 
@@ -112,7 +112,7 @@ func New(config Config) (*Server, error) {
 }
 
 // SetCredentials swaps one coherent live username map and instance password.
-func (s *Server) SetCredentials(authority *identity.Identity, snapshot *state.RuntimeSnapshot) error {
+func (s *Server) SetCredentials(authority *credentialspkg.Identity, snapshot *state.RuntimeSnapshot) error {
 	if s == nil || authority == nil {
 		return errors.New("socks: installation identity is required")
 	}
@@ -131,7 +131,7 @@ func (s *Server) SetCredentials(authority *identity.Identity, snapshot *state.Ru
 			}
 			credentials, available := authority.Credentials(node.Route())
 			if !available {
-				return identity.ErrInvalidKey
+				return credentialspkg.ErrInvalidKey
 			}
 			if _, duplicate := next.nodes[credentials.Username]; duplicate {
 				return fmt.Errorf("%w: duplicate node route", state.ErrInvalidSnapshot)
@@ -501,8 +501,8 @@ func samePinAuthority(left, right state.TunnelPin) bool {
 }
 
 func sameCanonicalNode(left, right state.Node) bool {
-	leftKey, leftErr := identity.NodeKey(left.Route())
-	rightKey, rightErr := identity.NodeKey(right.Route())
+	leftKey, leftErr := provider.NodeKey(left.Route())
+	rightKey, rightErr := provider.NodeKey(right.Route())
 	return leftErr == nil && rightErr == nil && leftKey == rightKey && left.AuthorityID == right.AuthorityID
 }
 

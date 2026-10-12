@@ -13,7 +13,7 @@ import (
 	"strings"
 
 	"github.com/kfadapter/kfadapter/internal/config"
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
@@ -53,7 +53,7 @@ type Metadata struct {
 
 // Render emits padded Base64 of deterministic newline-delimited SOCKS5 links.
 // Its complete input is request-local or immutable; it has no side effects.
-func Render(nodes []state.Node, filter Filter, socksAddress string, authority *identity.Identity) (string, int, error) {
+func Render(nodes []state.Node, filter Filter, socksAddress string, authority *credentials.Identity) (string, int, error) {
 	host, port, err := parseAddress(socksAddress)
 	if err != nil {
 		return "", 0, err

@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
@@ -111,13 +111,13 @@ type frontendFixture struct {
 	server      *Server
 	snapshots   *frontendSnapshots
 	listener    *frontendListener
-	credentials identity.Credentials
+	credentials credentials.Credentials
 	serveDone   chan error
 }
 
 func newFrontendFixture(t *testing.T, transport provider.Transport, maxConnections int, peerIP net.IP) *frontendFixture {
 	t.Helper()
-	authority, err := identity.New(bytes.Repeat([]byte{0x42}, 32), "00112233445566778899aabbccddeeff")
+	authority, err := credentials.New(bytes.Repeat([]byte{0x42}, 32), "00112233445566778899aabbccddeeff")
 	if err != nil {
 		t.Fatal(err)
 	}

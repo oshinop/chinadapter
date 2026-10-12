@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
@@ -51,7 +51,7 @@ func (l *transientListener) Accept() (net.Conn, error) {
 
 func newAcceptTestServer(t *testing.T) *Server {
 	t.Helper()
-	authority, err := identity.New(nil, "00112233445566778899aabbccddeeff")
+	authority, err := credentials.New(nil, "00112233445566778899aabbccddeeff")
 	if err != nil {
 		t.Fatal(err)
 	}

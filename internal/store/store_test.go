@@ -12,7 +12,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	domain "github.com/kfadapter/kfadapter/internal/state"
 )
@@ -54,7 +53,7 @@ func TestV8FixtureMigrationPreservesProvidersAndSessions(t *testing.T) {
 		if authority, exists := snapshot.Authorities["default"]; !exists || len(authority.Data) == 0 {
 			t.Fatal("tunnel authority lost")
 		}
-		expected, err := identity.NodeID(identity.Route{Provider: id, Protocol: snapshot.Nodes[0].Protocol, Host: snapshot.Nodes[0].Host, Port: snapshot.Nodes[0].Port})
+		expected, err := provider.NodeID(provider.Route{Provider: id, Protocol: snapshot.Nodes[0].Protocol, Host: snapshot.Nodes[0].Host, Port: snapshot.Nodes[0].Port})
 		if err != nil || snapshot.Nodes[0].ID != expected {
 			t.Fatal("node ID not remapped from persisted route")
 		}

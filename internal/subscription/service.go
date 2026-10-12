@@ -11,7 +11,7 @@ import (
 	"sync/atomic"
 	"unicode/utf8"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	"github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/store"
@@ -37,7 +37,7 @@ type Service struct {
 	responseSlots chan struct{}
 }
 type catalog struct {
-	identity *identity.Identity
+	identity *credentials.Identity
 	nodes    []state.Node
 }
 
@@ -118,7 +118,7 @@ func (service *Service) HandleSubscription(w http.ResponseWriter, r *http.Reques
 		writeResponseBusy(w)
 		return
 	}
-	id, valid := identity.ParseSubscriptionPath(r.URL.EscapedPath())
+	id, valid := credentials.ParseSubscriptionPath(r.URL.EscapedPath())
 	filter, validFilter := parseSubscriptionFilter(r.URL.RawQuery)
 	if r.Method != http.MethodGet || !valid || !validFilter {
 		writeNotFound(w)

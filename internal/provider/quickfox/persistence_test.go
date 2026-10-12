@@ -6,7 +6,6 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 	storepkg "github.com/kfadapter/kfadapter/internal/store"
@@ -28,7 +27,7 @@ func TestQuickFoxSnapshotSurvivesSQLiteRestart(t *testing.T) {
 	}
 	now := time.Now().UTC()
 	node := state.Node{Provider: ProviderID, Protocol: NativeProtocol, AuthorityID: authorityID, Host: "34.160.111.145", Port: 80, Name: "西雅图专线", Group: "国内模式 / 美国节点", Model: "国内模式", Eligible: true}
-	node.ID, err = identity.NodeID(node.Route())
+	node.ID, err = provider.NodeID(node.Route())
 	if err != nil {
 		t.Fatal(err)
 	}

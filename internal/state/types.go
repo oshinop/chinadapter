@@ -14,7 +14,7 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -110,8 +110,8 @@ type Node struct {
 }
 
 // Route contains only the inputs the provider transport uses to reach a node.
-func (n Node) Route() identity.Route {
-	return identity.Route{Provider: n.Provider, Protocol: n.Protocol, Host: n.Host, Port: n.Port}
+func (n Node) Route() provider.Route {
+	return provider.Route{Provider: n.Provider, Protocol: n.Protocol, Host: n.Host, Port: n.Port}
 }
 
 // TunnelEligible reports whether a generic provider transport can accept the
@@ -485,12 +485,12 @@ func NewPersistentState() (PersistentState, error) {
 }
 
 // Identity derives the immutable local credential authority from the verifier.
-func (p PersistentState) Identity() (*identity.Identity, error) {
+func (p PersistentState) Identity() (*credentialspkg.Identity, error) {
 	var hash []byte
 	if p.AccessTokenInitialized() {
 		hash = p.AccessTokenVerifier.Hash
 	}
-	return identity.New(hash, p.InstallationID)
+	return credentialspkg.New(hash, p.InstallationID)
 }
 
 // ChangeAccessToken rotates only local access authority, not provider sessions.
@@ -510,12 +510,12 @@ func (p *PersistentState) ChangeAccessToken(current, next string) error {
 }
 
 // BuildSelectors derives a live username map without persisting credentials.
-func BuildSelectors(nodes []Node, authority *identity.Identity) (map[string]NodeRef, error) {
+func BuildSelectors(nodes []Node, authority *credentialspkg.Identity) (map[string]NodeRef, error) {
 	selectors := make(map[string]NodeRef, len(nodes))
 	for _, node := range nodes {
 		credentials, available := authority.Credentials(node.Route())
 		if !available {
-			return nil, identity.ErrInvalidKey
+			return nil, credentialspkg.ErrInvalidKey
 		}
 		if _, duplicate := selectors[credentials.Username]; duplicate {
 			return nil, fmt.Errorf("%w: duplicate node route", ErrInvalidSnapshot)

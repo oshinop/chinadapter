@@ -11,7 +11,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
+	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/store"
@@ -185,7 +185,7 @@ func (fixture *fixture) restore(t *testing.T) {
 	}
 }
 
-type selectorBuilder struct{ identity *identity.Identity }
+type selectorBuilder struct{ identity *credentialspkg.Identity }
 
 func (builder selectorBuilder) Build(nodes []state.Node) (map[string]state.NodeRef, error) {
 	return state.BuildSelectors(nodes, builder.identity)
@@ -209,7 +209,7 @@ func runDue(t *testing.T, supervisor *Supervisor) {
 	workers.Wait()
 }
 
-func credentials(t *testing.T, fixture *fixture, id provider.ID) identity.Credentials {
+func credentials(t *testing.T, fixture *fixture, id provider.ID) credentialspkg.Credentials {
 	t.Helper()
 	persistent, err := fixture.store.Load(t.Context())
 	if err != nil {

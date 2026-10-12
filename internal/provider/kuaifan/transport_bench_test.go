@@ -8,7 +8,7 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/kuaifan/wifiin"
+	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
 )
 
 // BenchmarkRelay exercises a complete bidirectional encrypted relay with a

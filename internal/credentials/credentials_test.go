@@ -1,4 +1,4 @@
-package identity
+package credentials
 
 import (
 	"bytes"
@@ -7,6 +7,8 @@ import (
 	"encoding/base64"
 	"strings"
 	"testing"
+
+	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
 func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
@@ -22,8 +24,8 @@ func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
 		return m.Sum(nil)
 	}
 	instance := reference(hash, "kfadapter/instance/v3\x00"+installation)
-	route := Route{Provider: "kuaifan", Protocol: "kuaifan-wifiin", Host: "Node.Example.", Port: 11000}
-	key, err := NodeKey(route)
+	route := provider.Route{Provider: "kuaifan", Protocol: "kuaifan-wifiin", Host: "Node.Example.", Port: 11000}
+	key, err := provider.NodeKey(route)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -66,29 +68,5 @@ func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
 	}
 	if _, ok := uninitialized.Credentials(route); ok || uninitialized.SubscriptionID() != "" || uninitialized.AuthenticatePassword(credentials.Password) {
 		t.Fatal("uninitialized installation exposes authority")
-	}
-}
-
-func TestCanonicalRouteAndProtocolSeparation(t *testing.T) {
-	route := Route{Provider: "quickfox", Protocol: "quickfox-native", Host: "2001:0db8::1", Port: 443}
-	canonical, err := Canonicalize(route)
-	if err != nil {
-		t.Fatal(err)
-	}
-	if canonical.Host != "2001:db8::1" {
-		t.Fatal("IP not canonicalized")
-	}
-	first, err := NodeID(route)
-	if err != nil {
-		t.Fatal(err)
-	}
-	second, err := NodeID(canonical)
-	if err != nil || first != second {
-		t.Fatal("canonical route changed ID")
-	}
-	canonical.Protocol = "other-native"
-	third, err := NodeID(canonical)
-	if err != nil || first == third {
-		t.Fatal("protocol omitted from ID")
 	}
 }

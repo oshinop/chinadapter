@@ -7,7 +7,6 @@ import (
 	"sync/atomic"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -165,8 +164,8 @@ func currentSessionMatchesPin(current *RuntimeSnapshot, pin TunnelPin) bool {
 	if !available || !node.TunnelEligible() {
 		return false
 	}
-	left, leftErr := identity.NodeKey(node.Route())
-	right, rightErr := identity.NodeKey(pin.Node.Route())
+	left, leftErr := provider.NodeKey(node.Route())
+	right, rightErr := provider.NodeKey(pin.Node.Route())
 	authority, authorityAvailable := current.Authority(node)
 	return leftErr == nil && rightErr == nil && left == right && node.AuthorityID == pin.Node.AuthorityID && authorityAvailable &&
 		authority.Protocol == pin.Authority.Protocol && subtle.ConstantTimeCompare(authority.Data, pin.Authority.Data) == 1
