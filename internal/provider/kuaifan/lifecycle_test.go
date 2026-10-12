@@ -9,6 +9,7 @@ import (
 	"sync"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
@@ -16,37 +17,49 @@ import (
 )
 
 func TestRetryRetriesPerRequestTimeouts(t *testing.T) {
-	client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("network is not used")
-	}))
-	calls := 0
-	value, err := retry(context.Background(), retryTestDriver(client), func() (int, error) {
-		calls++
-		if calls < 3 {
-			return 0, context.DeadlineExceeded
+	synctest.Test(t, func(t *testing.T) {
+		client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network is not used")
+		}))
+		calls := 0
+		started := time.Now()
+		value, err := retry(context.Background(), retryTestDriver(client), func() (int, error) {
+			calls++
+			if calls < 3 {
+				return 0, context.DeadlineExceeded
+			}
+			return 42, nil
+		})
+		if err != nil || calls != 3 || value != 42 {
+			t.Fatalf("request timeout retry = %d, %v after %d calls", value, err, calls)
 		}
-		return 42, nil
+		if elapsed := time.Since(started); elapsed < time.Millisecond || elapsed > 2*time.Millisecond {
+			t.Fatalf("request timeout retries elapsed %s outside [1ms, 2ms]", elapsed)
+		}
 	})
-	if err != nil || calls != 3 || value != 42 {
-		t.Fatalf("request timeout retry = %d, %v after %d calls", value, err, calls)
-	}
 }
 
 func TestRetryStopsAtParentDeadline(t *testing.T) {
-	client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("network is not used")
-	}))
-	ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
-	defer cancel()
-	calls := 0
-	_, err := retry(ctx, retryTestDriver(client), func() (struct{}, error) {
-		calls++
-		<-ctx.Done()
-		return struct{}{}, ctx.Err()
+	synctest.Test(t, func(t *testing.T) {
+		client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network is not used")
+		}))
+		ctx, cancel := context.WithTimeout(context.Background(), time.Millisecond)
+		defer cancel()
+		calls := 0
+		started := time.Now()
+		_, err := retry(ctx, retryTestDriver(client), func() (struct{}, error) {
+			calls++
+			<-ctx.Done()
+			return struct{}{}, ctx.Err()
+		})
+		if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
+			t.Fatalf("parent deadline retry = %v after %d calls", err, calls)
+		}
+		if elapsed := time.Since(started); elapsed != time.Millisecond {
+			t.Fatalf("parent deadline elapsed %s, want 1ms", elapsed)
+		}
 	})
-	if !errors.Is(err, context.DeadlineExceeded) || calls != 1 {
-		t.Fatalf("parent deadline retry = %v after %d calls", err, calls)
-	}
 }
 
 func TestKuaifanIOSRejectionKeepsWindowsNodes(t *testing.T) {

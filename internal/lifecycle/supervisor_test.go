@@ -6,6 +6,7 @@ import (
 	"strings"
 	"sync/atomic"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -34,21 +35,39 @@ func TestUnexpectedWorkerExitIsFatalAndDrains(t *testing.T) {
 }
 
 func TestParentCancellationIsClean(t *testing.T) {
-	ctx, cancel := context.WithCancel(context.Background())
-	supervisor, err := New([]Worker{{
-		Name: "worker",
-		Run: func(ctx context.Context) error {
-			<-ctx.Done()
-			return ctx.Err()
-		},
-	}}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	cancel()
-	if err := supervisor.Run(ctx); err != nil {
-		t.Fatalf("cancellation should be clean: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		ctx, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		started := make(chan struct{})
+		supervisor, err := New([]Worker{{
+			Name: "worker",
+			Run: func(ctx context.Context) error {
+				close(started)
+				<-ctx.Done()
+				return ctx.Err()
+			},
+		}}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		finished := make(chan error, 1)
+		go func() { finished <- supervisor.Run(ctx) }()
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("worker did not start")
+		}
+		select {
+		case err := <-finished:
+			t.Fatalf("supervisor exited before cancellation: %v", err)
+		default:
+		}
+		cancel()
+		if err := <-finished; err != nil {
+			t.Fatalf("cancellation should be clean: %v", err)
+		}
+	})
 }
 
 func TestWorkerCancellationWithLiveParentIsFatal(t *testing.T) {
@@ -70,37 +89,45 @@ func TestWorkerCancellationWithLiveParentIsFatal(t *testing.T) {
 }
 
 func TestSiblingCancellationPreservesOriginalFailure(t *testing.T) {
-	primary := errors.New("listener failed")
-	supervisor, err := New([]Worker{
-		{Name: "listener", Run: func(context.Context) error { return primary }},
-		{Name: "peer", Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }},
-	}, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	err = supervisor.Run(context.Background())
-	if !errors.Is(err, primary) || !strings.Contains(err.Error(), "listener failed") {
-		t.Fatalf("sibling cancellation replaced primary failure: %v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		primary := errors.New("listener failed")
+		supervisor, err := New([]Worker{
+			{Name: "listener", Run: func(context.Context) error { return primary }},
+			{Name: "peer", Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }},
+		}, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		err = supervisor.Run(context.Background())
+		if !errors.Is(err, primary) || !strings.Contains(err.Error(), "listener failed") {
+			t.Fatalf("sibling cancellation replaced primary failure: %v", err)
+		}
+	})
 }
 
 func TestWatchdogResetsAndEventuallyFails(t *testing.T) {
-	var calls atomic.Int32
-	probeErr := errors.New("down")
-	probe := func(context.Context) error {
-		switch calls.Add(1) {
-		case 1, 3, 4:
-			return probeErr
-		default:
-			return nil
+	synctest.Test(t, func(t *testing.T) {
+		var calls atomic.Int32
+		probeErr := errors.New("down")
+		probe := func(context.Context) error {
+			switch calls.Add(1) {
+			case 1, 3, 4:
+				return probeErr
+			default:
+				return nil
+			}
 		}
-	}
-	ctx, cancel := context.WithTimeout(context.Background(), time.Second)
-	defer cancel()
-	err := Watchdog(time.Millisecond, 2, probe)(ctx)
-	if err == nil || !strings.Contains(err.Error(), "2 consecutive") {
-		t.Fatalf("expected threshold failure, got %v", err)
-	}
+		ctx, cancel := context.WithTimeout(context.Background(), time.Minute)
+		defer cancel()
+		started := time.Now()
+		err := Watchdog(time.Second, 2, probe)(ctx)
+		if err == nil || !strings.Contains(err.Error(), "2 consecutive") {
+			t.Fatalf("expected threshold failure, got %v", err)
+		}
+		if calls.Load() != 4 || time.Since(started) != 4*time.Second {
+			t.Fatalf("watchdog failed at call %d after %s, want call 4 at 4s", calls.Load(), time.Since(started))
+		}
+	})
 }
 
 func TestNewRejectsInvalidWorkers(t *testing.T) {
@@ -113,34 +140,41 @@ func TestNewRejectsInvalidWorkers(t *testing.T) {
 }
 
 func TestShutdownRunsSequentiallyInReverseOrderWithSharedDeadline(t *testing.T) {
-	var order []string
-	var deadline time.Time
-	workers := []Worker{}
-	for _, name := range []string{"first", "second", "third"} {
-		workers = append(workers, Worker{Name: name, Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, Shutdown: func(ctx context.Context) error {
-			got, ok := ctx.Deadline()
-			if !ok {
-				t.Error("shutdown lacks deadline")
-			}
-			if deadline.IsZero() {
-				deadline = got
-			} else if !deadline.Equal(got) {
-				t.Error("workers received separate deadlines")
-			}
-			order = append(order, name)
-			return nil
-		}})
-	}
-	supervisor, err := New(workers, time.Second)
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	cancel()
-	if err := supervisor.Run(ctx); err != nil {
-		t.Fatal(err)
-	}
-	if strings.Join(order, ",") != "third,second,first" {
-		t.Fatalf("shutdown order = %v", order)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		var order []string
+		var deadline time.Time
+		workers := []Worker{}
+		for _, name := range []string{"first", "second", "third"} {
+			workers = append(workers, Worker{Name: name, Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, Shutdown: func(ctx context.Context) error {
+				got, ok := ctx.Deadline()
+				if !ok {
+					t.Error("shutdown lacks deadline")
+				}
+				if deadline.IsZero() {
+					deadline = got
+				} else if !deadline.Equal(got) {
+					t.Error("workers received separate deadlines")
+				}
+				order = append(order, name)
+				time.Sleep(200 * time.Millisecond)
+				return nil
+			}})
+		}
+		supervisor, err := New(workers, time.Second)
+		if err != nil {
+			t.Fatal(err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		cancel()
+		started := time.Now()
+		if err := supervisor.Run(ctx); err != nil {
+			t.Fatal(err)
+		}
+		if strings.Join(order, ",") != "third,second,first" {
+			t.Fatalf("shutdown order = %v", order)
+		}
+		if !deadline.Equal(started.Add(time.Second)) || time.Since(started) != 600*time.Millisecond {
+			t.Fatalf("shared shutdown budget: deadline %v, elapsed %s", deadline, time.Since(started))
+		}
+	})
 }

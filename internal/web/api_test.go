@@ -11,6 +11,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/credentials"
@@ -480,52 +481,56 @@ func TestAccessTokenValidationBounds(t *testing.T) {
 }
 
 func TestAccessSetupFirstClaimIsAtomic(t *testing.T) {
-	backend := &fakeBackend{}
-	started := make(chan struct{}, 2)
-	release := make(chan struct{})
-	backend.accessSetupStarted = started
-	backend.accessSetupRelease = release
-	api := newTestAPI(t, backend, newFakeSubscriptions())
+	synctest.Test(t, func(t *testing.T) {
+		backend := &fakeBackend{}
+		started := make(chan struct{}, 2)
+		release := make(chan struct{})
+		backend.accessSetupStarted = started
+		backend.accessSetupRelease = release
+		api := newTestAPI(t, backend, newFakeSubscriptions())
 
-	responses := make(chan *httptest.ResponseRecorder, 2)
-	for _, remote := range []string{"192.0.2.1:10001", "192.0.2.2:10002"} {
-		go func(remote string) {
-			req := httptest.NewRequest(http.MethodPost, "http://"+testHost+"/api/v1/access/setup", strings.NewReader(`{"token":"`+validTestToken+`"}`))
-			req.Host = testHost
-			req.RemoteAddr = remote
-			req.Header.Set("Origin", testOrigin)
-			req.Header.Set("Content-Type", "application/json")
-			response := httptest.NewRecorder()
-			api.ServeHTTP(response, req)
-			responses <- response
-		}(remote)
-	}
-	for range 2 {
-		select {
-		case <-started:
-		case <-time.After(time.Second):
-			t.Fatal("concurrent setup did not reach backend")
+		responses := make(chan *httptest.ResponseRecorder, 2)
+		for _, remote := range []string{"192.0.2.1:10001", "192.0.2.2:10002"} {
+			go func(remote string) {
+				req := httptest.NewRequest(http.MethodPost, "http://"+testHost+"/api/v1/access/setup", strings.NewReader(`{"token":"`+validTestToken+`"}`))
+				req.Host = testHost
+				req.RemoteAddr = remote
+				req.Header.Set("Origin", testOrigin)
+				req.Header.Set("Content-Type", "application/json")
+				response := httptest.NewRecorder()
+				api.ServeHTTP(response, req)
+				responses <- response
+			}(remote)
 		}
-	}
-	close(release)
-	statuses := map[int]int{}
-	for range 2 {
-		select {
-		case response := <-responses:
-			statuses[response.Code]++
-		case <-time.After(time.Second):
-			t.Fatal("concurrent setup did not finish")
+		synctest.Wait()
+		for range 2 {
+			select {
+			case <-started:
+			default:
+				t.Fatal("concurrent setup did not reach backend")
+			}
 		}
-	}
-	if statuses[http.StatusCreated] != 1 || statuses[http.StatusConflict] != 1 {
-		t.Fatalf("atomic setup statuses = %#v", statuses)
-	}
-	backend.mu.Lock()
-	calls, initialized := backend.accessSetupCalls, backend.accessInitialized
-	backend.mu.Unlock()
-	if calls != 2 || !initialized {
-		t.Fatalf("first claim backend state calls=%d initialized=%t", calls, initialized)
-	}
+		close(release)
+		synctest.Wait()
+		statuses := map[int]int{}
+		for range 2 {
+			select {
+			case response := <-responses:
+				statuses[response.Code]++
+			default:
+				t.Fatal("concurrent setup did not finish")
+			}
+		}
+		if statuses[http.StatusCreated] != 1 || statuses[http.StatusConflict] != 1 {
+			t.Fatalf("atomic setup statuses = %#v", statuses)
+		}
+		backend.mu.Lock()
+		calls, initialized := backend.accessSetupCalls, backend.accessInitialized
+		backend.mu.Unlock()
+		if calls != 2 || !initialized {
+			t.Fatalf("first claim backend state calls=%d initialized=%t", calls, initialized)
+		}
+	})
 }
 
 func TestAccessThrottleAndPreSessionChecks(t *testing.T) {
@@ -641,57 +646,62 @@ func TestAuthenticatedMutationsAccountLoginAndAccessLock(t *testing.T) {
 }
 
 func TestAccessLockCompletesDuringProviderLogin(t *testing.T) {
-	started := make(chan struct{}, 1)
-	release := make(chan struct{})
-	backend := &fakeBackend{accountLoginStarted: started, accountLoginRelease: release}
-	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie := establish(t, api)
+	synctest.Test(t, func(t *testing.T) {
+		started := make(chan struct{}, 1)
+		release := make(chan struct{})
+		backend := &fakeBackend{accountLoginStarted: started, accountLoginRelease: release}
+		api := newTestAPI(t, backend, newFakeSubscriptions())
+		cookie := establish(t, api)
 
-	loginResponses := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		loginResponses <- request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
-	}()
-	select {
-	case <-started:
-	case <-time.After(time.Second):
-		t.Fatal("provider login did not reach the backend")
-	}
+		loginResponses := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			loginResponses <- request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
+		}()
+		synctest.Wait()
+		select {
+		case <-started:
+		default:
+			t.Fatal("provider login did not reach the backend")
+		}
 
-	logoutResponses := make(chan *httptest.ResponseRecorder, 1)
-	go func() {
-		logoutResponses <- request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
-	}()
-	select {
-	case logout := <-logoutResponses:
-		if logout.Code != http.StatusNoContent || !strings.Contains(logout.Header().Get("Set-Cookie"), "Max-Age=0") {
-			t.Fatalf("access lock = %d %#v", logout.Code, logout.Header())
+		logoutResponses := make(chan *httptest.ResponseRecorder, 1)
+		go func() {
+			logoutResponses <- request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
+		}()
+		synctest.Wait()
+		select {
+		case logout := <-logoutResponses:
+			if logout.Code != http.StatusNoContent || !strings.Contains(logout.Header().Get("Set-Cookie"), "Max-Age=0") {
+				t.Fatalf("access lock = %d %#v", logout.Code, logout.Header())
+			}
+		default:
+			t.Fatal("access lock waited for provider login")
 		}
-	case <-time.After(time.Second):
-		t.Fatal("access lock waited for provider login")
-	}
-	if response := request(api, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
-		t.Fatalf("revoked session status = %d", response.Code)
-	}
-	select {
-	case response := <-loginResponses:
-		t.Fatalf("provider login completed before release: %d", response.Code)
-	default:
-	}
-	close(release)
-	select {
-	case response := <-loginResponses:
-		if response.Code != http.StatusOK {
-			t.Fatalf("provider login = %d: %s", response.Code, response.Body.String())
+		if response := request(api, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
+			t.Fatalf("revoked session status = %d", response.Code)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("provider login did not complete after release")
-	}
-	backend.mu.Lock()
-	calls := backend.accountLoginCalls
-	backend.mu.Unlock()
-	if calls != 1 {
-		t.Fatalf("provider login calls = %d", calls)
-	}
+		select {
+		case response := <-loginResponses:
+			t.Fatalf("provider login completed before release: %d", response.Code)
+		default:
+		}
+		close(release)
+		synctest.Wait()
+		select {
+		case response := <-loginResponses:
+			if response.Code != http.StatusOK {
+				t.Fatalf("provider login = %d: %s", response.Code, response.Body.String())
+			}
+		default:
+			t.Fatal("provider login did not complete after release")
+		}
+		backend.mu.Lock()
+		calls := backend.accountLoginCalls
+		backend.mu.Unlock()
+		if calls != 1 {
+			t.Fatalf("provider login calls = %d", calls)
+		}
+	})
 }
 
 func TestNodeDetailsRequiresAuthenticationAndUsesExactRoute(t *testing.T) {
@@ -898,37 +908,77 @@ func TestStableSubscriptionURLAndRemovedRoutes(t *testing.T) {
 	}
 }
 
+// Wait makes preceding writes visible, but advancing time does not order a
+// body read before the next heartbeat write. Protect both sides of the recorder.
+type sseRecorder struct {
+	*httptest.ResponseRecorder
+	mu sync.Mutex
+}
+
+func (r *sseRecorder) Write(body []byte) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.Write(body)
+}
+
+func (r *sseRecorder) WriteString(body string) (int, error) {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.ResponseRecorder.WriteString(body)
+}
+
+func (r *sseRecorder) body() string {
+	r.mu.Lock()
+	defer r.mu.Unlock()
+	return r.Body.String()
+}
+
 func TestSSESurvivesAccessMigration(t *testing.T) {
-	backend := &fakeBackend{events: make(chan Event), subscribed: make(chan struct{}, 1)}
-	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie := establish(t, api)
-	context, cancel := context.WithCancel(context.Background())
-	defer cancel()
-	req := httptest.NewRequest(http.MethodGet, "http://"+testHost+"/api/v1/events", nil).WithContext(context)
-	req.Host = testHost
-	req.Header.Set("Origin", testOrigin)
-	req.AddCookie(cookie)
-	response := httptest.NewRecorder()
-	done := make(chan struct{})
-	go func() {
-		api.ServeHTTP(response, req)
-		close(done)
-	}()
-	select {
-	case <-backend.subscribed:
-	case <-time.After(time.Second):
-		t.Fatal("SSE did not subscribe")
-	}
-	backend.events <- Event{Type: "state", Data: map[string]any{"state": "ready"}}
-	cancel()
-	select {
-	case <-done:
-	case <-time.After(time.Second):
-		t.Fatal("SSE did not close after cancellation")
-	}
-	if !strings.Contains(response.Body.String(), "event: state") {
-		t.Fatalf("SSE payload = %q", response.Body.String())
-	}
+	synctest.Test(t, func(t *testing.T) {
+		backend := &fakeBackend{events: make(chan Event), subscribed: make(chan struct{}, 1)}
+		api := newTestAPI(t, backend, newFakeSubscriptions())
+		cookie := establish(t, api)
+		context, cancel := context.WithCancel(context.Background())
+		defer cancel()
+		req := httptest.NewRequest(http.MethodGet, "http://"+testHost+"/api/v1/events", nil).WithContext(context)
+		req.Host = testHost
+		req.Header.Set("Origin", testOrigin)
+		req.AddCookie(cookie)
+		response := &sseRecorder{ResponseRecorder: httptest.NewRecorder()}
+		done := make(chan struct{})
+		go func() {
+			api.ServeHTTP(response, req)
+			close(done)
+		}()
+		synctest.Wait()
+		select {
+		case <-backend.subscribed:
+		default:
+			t.Fatal("SSE did not subscribe")
+		}
+		backend.events <- Event{Type: "state", Data: map[string]any{"state": "ready"}}
+		synctest.Wait()
+		time.Sleep(api.config.SSEHeartbeat - time.Nanosecond)
+		synctest.Wait()
+		if strings.Contains(response.body(), ": keepalive") {
+			t.Fatal("SSE heartbeat sent before its interval")
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		if got := strings.Count(response.body(), ": keepalive\n\n"); got != 1 {
+			t.Fatalf("SSE heartbeat count = %d, want 1", got)
+		}
+		cancel()
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("SSE did not close after cancellation")
+		}
+		if !strings.Contains(response.body(), "event: state") {
+			t.Fatalf("SSE payload = %q", response.body())
+		}
+	})
 }
 
 func TestAPIMutationsRejectCrossOrigin(t *testing.T) {

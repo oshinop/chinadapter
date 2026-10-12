@@ -10,6 +10,7 @@ import (
 	"path/filepath"
 	"strings"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/config"
@@ -86,30 +87,43 @@ func TestAdapterLifecycleShutdown(t *testing.T) {
 }
 
 func TestAdapterSupervisorUsesInternalDrainDeadline(t *testing.T) {
-	previous := adapterDrainTimeout
-	adapterDrainTimeout = 20 * time.Millisecond
-	t.Cleanup(func() { adapterDrainTimeout = previous })
-	blocked := make(chan struct{})
-	supervisor, err := newAdapterSupervisor([]lifecycle.Worker{{
-		Name: "blocked", Run: func(ctx context.Context) error { <-ctx.Done(); <-blocked; return ctx.Err() },
-		Shutdown: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
-	}})
-	if err != nil {
-		t.Fatal(err)
-	}
-	ctx, cancel := context.WithCancel(context.Background())
-	result := make(chan error, 1)
-	go func() { result <- supervisor.Run(ctx) }()
-	cancel()
-	select {
-	case err := <-result:
-		if err == nil || !strings.Contains(err.Error(), "shutdown exceeded 20ms") {
-			t.Fatalf("result=%v", err)
+	synctest.Test(t, func(t *testing.T) {
+		blocked := make(chan struct{})
+		defer close(blocked)
+		supervisor, err := newAdapterSupervisor([]lifecycle.Worker{{
+			Name: "blocked", Run: func(ctx context.Context) error { <-ctx.Done(); <-blocked; return ctx.Err() },
+			Shutdown: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() },
+		}})
+		if err != nil {
+			t.Fatal(err)
 		}
-	case <-time.After(time.Second):
-		t.Fatal("deadline not enforced")
-	}
-	close(blocked)
+		ctx, cancel := context.WithCancel(context.Background())
+		result := make(chan error, 1)
+		go func() { result <- supervisor.Run(ctx) }()
+		cancel()
+		synctest.Wait()
+		started := time.Now()
+		time.Sleep(adapterDrainTimeout - time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-result:
+			t.Fatalf("drain ended before deadline: %v", err)
+		default:
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case err := <-result:
+			if err == nil || !strings.Contains(err.Error(), "shutdown exceeded 20s") {
+				t.Fatalf("result=%v", err)
+			}
+		default:
+			t.Fatal("deadline not enforced")
+		}
+		if time.Since(started) != adapterDrainTimeout {
+			t.Fatalf("drain elapsed %s, want %s", time.Since(started), adapterDrainTimeout)
+		}
+	})
 }
 
 func TestPersistedProviderSessionRestoresAcrossAdapterRestart(t *testing.T) {

@@ -7,6 +7,7 @@ import (
 	"strings"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 )
 
@@ -108,27 +109,42 @@ func newPersistentTestAPI(t *testing.T, now func() time.Time, backend *fakeBacke
 }
 
 func TestBrowserSessionPersistsAcrossAPIRecreationUntilExpiry(t *testing.T) {
-	now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
-	persistence := &fakeBrowserSessionPersistence{}
-	backend := &fakeBackend{}
-	clock := func() time.Time { return now }
+	synctest.Test(t, func(t *testing.T) {
+		persistence := &fakeBrowserSessionPersistence{}
+		backend := &fakeBackend{}
+		clock := time.Now
 
-	api := newPersistentTestAPI(t, clock, backend, persistence)
-	cookie := establish(t, api)
-	api = newPersistentTestAPI(t, clock, backend, persistence)
+		api := newPersistentTestAPI(t, clock, backend, persistence)
+		cookie := establish(t, api)
+		api = newPersistentTestAPI(t, clock, backend, persistence)
 
-	restored := request(api, http.MethodGet, "/api/v1/access/status", "", cookie, "")
-	assertAccessStatus(t, restored, true, true)
-	mutation := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, "")
-	if mutation.Code != http.StatusAccepted {
-		t.Fatalf("restored session mutation = %d: %s", mutation.Code, mutation.Body.String())
-	}
+		restored := request(api, http.MethodGet, "/api/v1/access/status", "", cookie, "")
+		assertAccessStatus(t, restored, true, true)
+		mutation := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, "")
+		if mutation.Code != http.StatusAccepted {
+			t.Fatalf("restored session mutation = %d: %s", mutation.Code, mutation.Body.String())
+		}
 
-	now = now.Add(2 * time.Hour)
-	expiredAPI := newPersistentTestAPI(t, clock, backend, persistence)
-	if response := request(expiredAPI, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
-		t.Fatalf("expired restored session status = %d", response.Code)
-	}
+		time.Sleep(time.Hour - time.Nanosecond)
+		if response := request(api, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusOK {
+			t.Fatalf("session expired before TTL: %d", response.Code)
+		}
+		time.Sleep(time.Nanosecond)
+		// Recreate before touching the expired cached session, so expiry is also
+		// checked against the durable row rather than a prior cache eviction.
+		expiredAPI := newPersistentTestAPI(t, clock, backend, persistence)
+		if response := request(expiredAPI, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
+			t.Fatalf("restored session remained valid at TTL: %d", response.Code)
+		}
+		if response := request(api, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
+			t.Fatalf("session remained valid at TTL: %d", response.Code)
+		}
+		time.Sleep(time.Hour)
+		expiredAPI = newPersistentTestAPI(t, clock, backend, persistence)
+		if response := request(expiredAPI, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusUnauthorized {
+			t.Fatalf("expired restored session status = %d", response.Code)
+		}
+	})
 }
 
 func TestBrowserSessionLockRevokesDurablyAcrossAPIRecreation(t *testing.T) {

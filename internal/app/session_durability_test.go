@@ -7,6 +7,7 @@ import (
 	"os"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/accounts"
@@ -128,12 +129,13 @@ func completedWithin(t *testing.T, run func() error) {
 	t.Helper()
 	result := make(chan error, 1)
 	go func() { result <- run() }()
+	synctest.Wait()
 	select {
 	case err := <-result:
 		if err != nil {
 			t.Fatal(err)
 		}
-	case <-time.After(2 * time.Second):
+	default:
 		t.Fatal("local operation blocked behind provider network I/O")
 	}
 }
@@ -145,68 +147,74 @@ func pipeDial(context.Context, string, string) (net.Conn, error) {
 }
 
 func TestRuntimeReadsAndProbeDoNotWaitForProviderNetwork(t *testing.T) {
-	fixture := newRuntimeFixture(t, pipeDial)
-	entered, release := make(chan struct{}), make(chan struct{})
-	fixture.drivers[0].refresh = func(ctx context.Context, previous provider.Snapshot) (provider.Snapshot, error) {
-		close(entered)
-		select {
-		case <-ctx.Done():
-			return provider.Snapshot{}, ctx.Err()
-		case <-release:
-			return previous, nil
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newRuntimeFixture(t, pipeDial)
+		entered, release := make(chan struct{}), make(chan struct{})
+		fixture.drivers[0].refresh = func(ctx context.Context, previous provider.Snapshot) (provider.Snapshot, error) {
+			close(entered)
+			select {
+			case <-ctx.Done():
+				return provider.Snapshot{}, ctx.Err()
+			case <-release:
+				return previous, nil
+			}
 		}
-	}
-	ctx, cancel := context.WithCancel(t.Context())
-	defer cancel()
-	refreshed := make(chan error, 1)
-	go func() { refreshed <- fixture.runtime.Refresh(ctx, "alpha") }()
-	select {
-	case <-entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("provider refresh did not start")
-	}
-	completedWithin(t, func() error { _, err := fixture.runtime.NodeDetails(t.Context(), "alpha-node"); return err })
-	completedWithin(t, func() error { _, err := fixture.runtime.Status(t.Context()); return err })
-	completedWithin(t, func() error { _, err := fixture.runtime.Probe(t.Context(), "alpha-node"); return err })
-	completedWithin(t, func() error { return fixture.runtime.Refresh(t.Context(), "beta") })
-	close(release)
-	if err := <-refreshed; err != nil {
-		t.Fatal(err)
-	}
-	if len(fixture.manager.Current().Providers) != 2 {
-		t.Fatal("concurrent provider commit discarded a sibling")
-	}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		refreshed := make(chan error, 1)
+		go func() { refreshed <- fixture.runtime.Refresh(ctx, "alpha") }()
+		synctest.Wait()
+		select {
+		case <-entered:
+		default:
+			t.Fatal("provider refresh did not start")
+		}
+		completedWithin(t, func() error { _, err := fixture.runtime.NodeDetails(t.Context(), "alpha-node"); return err })
+		completedWithin(t, func() error { _, err := fixture.runtime.Status(t.Context()); return err })
+		completedWithin(t, func() error { _, err := fixture.runtime.Probe(t.Context(), "alpha-node"); return err })
+		completedWithin(t, func() error { return fixture.runtime.Refresh(t.Context(), "beta") })
+		close(release)
+		if err := <-refreshed; err != nil {
+			t.Fatal(err)
+		}
+		if len(fixture.manager.Current().Providers) != 2 {
+			t.Fatal("concurrent provider commit discarded a sibling")
+		}
+	})
 }
 
 func TestProbeSurvivesUnrelatedProviderRefresh(t *testing.T) {
-	entered, release := make(chan struct{}), make(chan struct{})
-	fixture := newRuntimeFixture(t, func(ctx context.Context, network, address string) (net.Conn, error) {
-		close(entered)
+	synctest.Test(t, func(t *testing.T) {
+		entered, release := make(chan struct{}), make(chan struct{})
+		fixture := newRuntimeFixture(t, func(ctx context.Context, network, address string) (net.Conn, error) {
+			close(entered)
+			select {
+			case <-ctx.Done():
+				return nil, ctx.Err()
+			case <-release:
+				return pipeDial(ctx, network, address)
+			}
+		})
+		probed := make(chan error, 1)
+		go func() { _, err := fixture.runtime.Probe(t.Context(), "alpha-node"); probed <- err }()
+		synctest.Wait()
 		select {
-		case <-ctx.Done():
-			return nil, ctx.Err()
-		case <-release:
-			return pipeDial(ctx, network, address)
+		case <-entered:
+		default:
+			t.Fatal("probe did not start")
+		}
+		if err := fixture.runtime.Refresh(t.Context(), "beta"); err != nil {
+			t.Fatal(err)
+		}
+		close(release)
+		if err := <-probed; err != nil {
+			t.Fatalf("unrelated generation update invalidated the probe: %v", err)
+		}
+		node, found := fixture.manager.Current().NodeByID("alpha-node")
+		if !found || node.Health != state.NodeHealthHealthy {
+			t.Fatal("probe result was not applied to unchanged node identity")
 		}
 	})
-	probed := make(chan error, 1)
-	go func() { _, err := fixture.runtime.Probe(t.Context(), "alpha-node"); probed <- err }()
-	select {
-	case <-entered:
-	case <-time.After(2 * time.Second):
-		t.Fatal("probe did not start")
-	}
-	if err := fixture.runtime.Refresh(t.Context(), "beta"); err != nil {
-		t.Fatal(err)
-	}
-	close(release)
-	if err := <-probed; err != nil {
-		t.Fatalf("unrelated generation update invalidated the probe: %v", err)
-	}
-	node, found := fixture.manager.Current().NodeByID("alpha-node")
-	if !found || node.Health != state.NodeHealthHealthy {
-		t.Fatal("probe result was not applied to unchanged node identity")
-	}
 }
 
 func TestProviderStalenessHintDoesNotRefuseAdmission(t *testing.T) {

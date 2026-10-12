@@ -9,6 +9,7 @@ import (
 	"reflect"
 	"sync"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
@@ -303,18 +304,27 @@ func TestRetryRetriesOnlyRetryableHTTPStatuses(t *testing.T) {
 		{status: http.StatusInternalServerError, attempts: 3},
 	} {
 		t.Run(http.StatusText(test.status), func(t *testing.T) {
-			calls := 0
-			client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-				calls++
-				return &http.Response{StatusCode: test.status, Body: ioNopString(""), Header: make(http.Header)}, nil
-			}))
-			_, err := retry(context.Background(), retryTestDriver(client), func() (ClientConfig, error) {
-				return client.FetchClientConfig(context.Background())
+			synctest.Test(t, func(t *testing.T) {
+				calls := 0
+				client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+					calls++
+					return &http.Response{StatusCode: test.status, Body: ioNopString(""), Header: make(http.Header)}, nil
+				}))
+				started := time.Now()
+				_, err := retry(context.Background(), retryTestDriver(client), func() (ClientConfig, error) {
+					return client.FetchClientConfig(context.Background())
+				})
+				var status *httpStatusError
+				if !errors.Is(err, ErrHTTPStatus) || !errors.As(err, &status) || status.status != test.status || calls != test.attempts {
+					t.Fatalf("status %d error = %v after %d calls, want %d", test.status, err, calls, test.attempts)
+				}
+				elapsed := time.Since(started)
+				minimum := time.Duration(test.attempts-1) * time.Millisecond / 2
+				maximum := time.Duration(test.attempts-1) * time.Millisecond
+				if elapsed < minimum || elapsed > maximum {
+					t.Fatalf("retry elapsed %s outside [%s, %s]", elapsed, minimum, maximum)
+				}
 			})
-			var status *httpStatusError
-			if !errors.Is(err, ErrHTTPStatus) || !errors.As(err, &status) || status.status != test.status || calls != test.attempts {
-				t.Fatalf("status %d error = %v after %d calls, want %d", test.status, err, calls, test.attempts)
-			}
 		})
 	}
 }
@@ -337,18 +347,24 @@ func TestRetryStopsWhenContextIsCancelled(t *testing.T) {
 }
 
 func TestRetryRetriesTemporaryTransportFailures(t *testing.T) {
-	client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
-		return nil, errors.New("network is not used")
-	}))
-	calls := 0
-	_, err := retry(context.Background(), retryTestDriver(client), func() (struct{}, error) {
-		calls++
-		return struct{}{}, temporaryTransportError{}
+	synctest.Test(t, func(t *testing.T) {
+		client := testControlClient(t, roundTripFunc(func(*http.Request) (*http.Response, error) {
+			return nil, errors.New("network is not used")
+		}))
+		calls := 0
+		started := time.Now()
+		_, err := retry(context.Background(), retryTestDriver(client), func() (struct{}, error) {
+			calls++
+			return struct{}{}, temporaryTransportError{}
+		})
+		var typed temporaryTransportError
+		if !errors.As(err, &typed) || calls != 3 {
+			t.Fatalf("temporary retry = %v after %d calls", err, calls)
+		}
+		if elapsed := time.Since(started); elapsed < time.Millisecond || elapsed > 2*time.Millisecond {
+			t.Fatalf("temporary retry elapsed %s outside [1ms, 2ms]", elapsed)
+		}
 	})
-	var typed temporaryTransportError
-	if !errors.As(err, &typed) || calls != 3 {
-		t.Fatalf("temporary retry = %v after %d calls", err, calls)
-	}
 }
 
 func TestRetryBackoffJitterAndCap(t *testing.T) {
@@ -372,23 +388,31 @@ func TestRetryBackoffJitterAndCap(t *testing.T) {
 }
 
 func TestRetryPreservesFinalResultAndError(t *testing.T) {
-	for _, attempts := range []int{1, 3, 5} {
-		for _, failure := range []error{ErrSchema, temporaryTransportError{}} {
-			driver := &Driver{attempts: attempts, backoff: time.Millisecond, maxBackoff: time.Millisecond}
-			calls := 0
-			value, err := retry(t.Context(), driver, func() (int, error) {
-				calls++
-				return 42, failure
-			})
-			wantCalls := attempts
-			if !retryable(failure) {
-				wantCalls = 1
-			}
-			if value != 42 || !errors.Is(err, failure) || reflect.TypeOf(err) != reflect.TypeOf(failure) || calls != wantCalls {
-				t.Fatalf("retry with %d attempts and %v = %d, %v after %d calls, want original result/error after %d", attempts, failure, value, err, calls, wantCalls)
+	synctest.Test(t, func(t *testing.T) {
+		for _, attempts := range []int{1, 3, 5} {
+			for _, failure := range []error{ErrSchema, temporaryTransportError{}} {
+				driver := &Driver{attempts: attempts, backoff: time.Millisecond, maxBackoff: time.Millisecond}
+				calls := 0
+				started := time.Now()
+				value, err := retry(t.Context(), driver, func() (int, error) {
+					calls++
+					return 42, failure
+				})
+				wantCalls := attempts
+				if !retryable(failure) {
+					wantCalls = 1
+				}
+				if value != 42 || !errors.Is(err, failure) || reflect.TypeOf(err) != reflect.TypeOf(failure) || calls != wantCalls {
+					t.Fatalf("retry with %d attempts and %v = %d, %v after %d calls, want original result/error after %d", attempts, failure, value, err, calls, wantCalls)
+				}
+				minimum := time.Duration(wantCalls-1) * time.Millisecond / 2
+				maximum := time.Duration(wantCalls-1) * time.Millisecond
+				if elapsed := time.Since(started); elapsed < minimum || elapsed > maximum {
+					t.Fatalf("retry elapsed %s outside [%s, %s]", elapsed, minimum, maximum)
+				}
 			}
 		}
-	}
+	})
 }
 
 func TestRetryCancelledParentMakesNoRequest(t *testing.T) {

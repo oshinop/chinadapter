@@ -10,6 +10,7 @@ import (
 	"net/http/httptest"
 	"reflect"
 	"testing"
+	"testing/synctest"
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
@@ -18,24 +19,30 @@ import (
 func TestQuickFoxTransientTimeoutIsRetriedAndSucceeds(t *testing.T) {
 	for _, timedOutRoute := range []string{"/user/info", "/line/socksServerPoolList"} {
 		t.Run(timedOutRoute, func(t *testing.T) {
-			calls := make(map[string]int)
-			driver := refreshTestDriver(t, controlRoundTripFunc(func(request *http.Request) (*http.Response, error) {
-				calls[request.URL.Path]++
-				if request.URL.Path == timedOutRoute && calls[request.URL.Path] == 1 {
-					<-request.Context().Done()
-					return nil, request.Context().Err()
+			synctest.Test(t, func(t *testing.T) {
+				calls := make(map[string]int)
+				driver := refreshTestDriver(t, controlRoundTripFunc(func(request *http.Request) (*http.Response, error) {
+					calls[request.URL.Path]++
+					if request.URL.Path == timedOutRoute && calls[request.URL.Path] == 1 {
+						<-request.Context().Done()
+						return nil, request.Context().Err()
+					}
+					return catalogHTTPResponse(t, request.URL.Path), nil
+				}))
+				current := refreshTestSnapshot(t, driver)
+				before := current.Clone()
+				started := time.Now()
+				next, err := driver.Refresh(context.Background(), current)
+				if err != nil || !next.Valid() || calls[timedOutRoute] != 2 || len(next.Nodes) != 2 {
+					t.Fatalf("timeout recovery = %#v, %v after %#v calls", next, err, calls)
 				}
-				return catalogHTTPResponse(t, request.URL.Path), nil
-			}))
-			current := refreshTestSnapshot(t, driver)
-			before := current.Clone()
-			next, err := driver.Refresh(context.Background(), current)
-			if err != nil || !next.Valid() || calls[timedOutRoute] != 2 || len(next.Nodes) != 2 {
-				t.Fatalf("timeout recovery = %#v, %v after %#v calls", next, err, calls)
-			}
-			if !reflect.DeepEqual(current, before) || !bytes.Equal(next.RefreshState, current.RefreshState) {
-				t.Fatal("transient timeout changed the stored token or caller snapshot")
-			}
+				if !reflect.DeepEqual(current, before) || !bytes.Equal(next.RefreshState, current.RefreshState) {
+					t.Fatal("transient timeout changed the stored token or caller snapshot")
+				}
+				if elapsed := time.Since(started); elapsed < 126*time.Millisecond || elapsed > 376*time.Millisecond {
+					t.Fatalf("timeout recovery elapsed %s outside [126ms, 376ms]", elapsed)
+				}
+			})
 		})
 	}
 }
@@ -101,15 +108,21 @@ func TestQuickFoxRetryClassifiesHTTPStatuses(t *testing.T) {
 }
 
 func TestQuickFoxCatalogRetryIsBounded(t *testing.T) {
-	calls := 0
-	driver := refreshTestDriver(t, controlRoundTripFunc(func(*http.Request) (*http.Response, error) {
-		calls++
-		return nil, context.DeadlineExceeded
-	}))
-	next, err := driver.Refresh(context.Background(), refreshTestSnapshot(t, driver))
-	if !errors.Is(err, context.DeadlineExceeded) || calls != 3 || !reflect.DeepEqual(next, provider.Snapshot{}) {
-		t.Fatalf("bounded retry = %#v, %v after %d calls", next, err, calls)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		calls := 0
+		driver := refreshTestDriver(t, controlRoundTripFunc(func(*http.Request) (*http.Response, error) {
+			calls++
+			return nil, context.DeadlineExceeded
+		}))
+		started := time.Now()
+		next, err := driver.Refresh(context.Background(), refreshTestSnapshot(t, driver))
+		if !errors.Is(err, context.DeadlineExceeded) || calls != 3 || !reflect.DeepEqual(next, provider.Snapshot{}) {
+			t.Fatalf("bounded retry = %#v, %v after %d calls", next, err, calls)
+		}
+		if elapsed := time.Since(started); elapsed < 375*time.Millisecond || elapsed > 875*time.Millisecond {
+			t.Fatalf("bounded retry elapsed %s outside [375ms, 875ms]", elapsed)
+		}
+	})
 }
 
 func TestQuickFoxCatalogRetryStopsOnParentCancellation(t *testing.T) {

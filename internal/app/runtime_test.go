@@ -6,6 +6,8 @@ import (
 	"net"
 	"strings"
 	"testing"
+	"testing/synctest"
+	"time"
 
 	"github.com/kfadapter/kfadapter/internal/state"
 )
@@ -85,13 +87,47 @@ func TestRuntimeAccountSelectorAuthorityRemainsStableOnRefresh(t *testing.T) {
 }
 
 func TestRuntimeProblemErrorsKeepPublicClassifications(t *testing.T) {
-	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, context.DeadlineExceeded })
-	_, err := fixture.runtime.Probe(t.Context(), "missing")
-	var public interface {
-		Code() string
-		HTTPStatus() int
-	}
-	if !errors.As(err, &public) || public.Code() != "node_not_found" || public.HTTPStatus() != 404 {
-		t.Fatalf("problem=%v", err)
-	}
+	synctest.Test(t, func(t *testing.T) {
+		fixture := newRuntimeFixture(t, func(ctx context.Context, _, _ string) (net.Conn, error) {
+			<-ctx.Done()
+			return nil, ctx.Err()
+		})
+		fixture.runtime.now = time.Now
+		result, err := fixture.runtime.Probe(t.Context(), "missing")
+		var public interface {
+			Code() string
+			HTTPStatus() int
+		}
+		if !errors.As(err, &public) || public.Code() != "node_not_found" || public.HTTPStatus() != 404 {
+			t.Fatalf("problem=%v", err)
+		}
+		ctx, cancel := context.WithCancel(t.Context())
+		defer cancel()
+		done := make(chan struct{})
+		go func() {
+			result, err = fixture.runtime.Probe(ctx, "alpha-node")
+			close(done)
+		}()
+		synctest.Wait()
+		time.Sleep(defaultProbeTimeout - time.Nanosecond)
+		synctest.Wait()
+		select {
+		case <-done:
+			t.Fatal("probe timed out before its deadline")
+		default:
+		}
+		time.Sleep(time.Nanosecond)
+		synctest.Wait()
+		select {
+		case <-done:
+		default:
+			t.Fatal("probe did not time out at its deadline")
+		}
+		if !errors.Is(err, context.DeadlineExceeded) || !errors.As(err, &public) || public.Code() != "tcp_probe_timeout" || public.HTTPStatus() != 504 {
+			t.Fatalf("timeout problem=%v", err)
+		}
+		if result.Health != string(state.NodeHealthUnhealthy) || result.TCPLatencyMS != int(defaultProbeTimeout/time.Millisecond) {
+			t.Fatalf("timeout result=%+v", result)
+		}
+	})
 }
