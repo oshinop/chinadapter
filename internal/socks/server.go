@@ -11,6 +11,8 @@ import (
 	"syscall"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
+
 	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -256,7 +258,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 	}()
 	defer close(stop)
 
-	var retryDelay time.Duration
+	retry := newAcceptBackOff()
 	for {
 		connection, err := listener.Accept()
 		if err != nil {
@@ -266,8 +268,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			if !temporaryAcceptError(err) {
 				return err
 			}
-			retryDelay = nextAcceptRetry(retryDelay)
-			timer := time.NewTimer(retryDelay)
+			timer := time.NewTimer(retry.NextBackOff())
 			select {
 			case <-ctx.Done():
 				timer.Stop()
@@ -276,7 +277,7 @@ func (s *Server) Serve(ctx context.Context, listener net.Listener) error {
 			}
 			continue
 		}
-		retryDelay = 0
+		retry.Reset()
 		select {
 		case s.slots <- struct{}{}:
 			handlerCtx, cancel := context.WithCancel(context.WithoutCancel(ctx))
@@ -310,15 +311,10 @@ func temporaryAcceptError(err error) bool {
 	return errors.As(err, &netErr) && netErr.Timeout()
 }
 
-// nextAcceptRetry doubles the accept backoff from 5ms, capped at one second.
-func nextAcceptRetry(previous time.Duration) time.Duration {
-	switch {
-	case previous == 0:
-		return 5 * time.Millisecond
-	case previous >= time.Second/2:
-		return time.Second
-	default:
-		return previous * 2
+func newAcceptBackOff() backoff.ExponentialBackOff {
+	return backoff.ExponentialBackOff{
+		InitialInterval: 5 * time.Millisecond, RandomizationFactor: 0,
+		Multiplier: 2, MaxInterval: time.Second,
 	}
 }
 

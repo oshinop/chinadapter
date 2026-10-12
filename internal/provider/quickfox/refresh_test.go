@@ -127,6 +127,39 @@ func TestQuickFoxCatalogRetryStopsOnParentCancellation(t *testing.T) {
 	}
 }
 
+func TestQuickFoxCatalogBackoffJitterAndCap(t *testing.T) {
+	for range 100 {
+		policy := newCatalogBackOff()
+		for attempt := range 100 {
+			minimum, maximum := 250*time.Millisecond, 500*time.Millisecond
+			if attempt == 0 {
+				minimum, maximum = 125*time.Millisecond, 375*time.Millisecond
+			}
+			if delay := policy.NextBackOff(); delay < minimum || delay > maximum {
+				t.Fatalf("catalog delay %d = %s outside [%s, %s]", attempt+1, delay, minimum, maximum)
+			}
+		}
+		policy.Reset()
+		if delay := policy.NextBackOff(); delay < 125*time.Millisecond || delay > 375*time.Millisecond {
+			t.Fatalf("reset catalog delay = %s, want initial interval jitter", delay)
+		}
+	}
+}
+
+func TestQuickFoxCatalogCancelledParentMakesNoRequest(t *testing.T) {
+	calls := 0
+	driver := refreshTestDriver(t, controlRoundTripFunc(func(*http.Request) (*http.Response, error) {
+		calls++
+		return nil, errors.New("network must not be used")
+	}))
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(errors.New("parent stopped"))
+	_, err := driver.retryCatalog(ctx, "token", "device")
+	if !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("cancelled parent = %v after %d calls", err, calls)
+	}
+}
+
 type controlRoundTripFunc func(*http.Request) (*http.Response, error)
 
 func (call controlRoundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) {

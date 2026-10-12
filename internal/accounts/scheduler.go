@@ -5,9 +5,10 @@ package accounts
 import (
 	"context"
 	"errors"
-	"math/rand/v2"
 	"sync"
 	"time"
+
+	"github.com/cenkalti/backoff/v5"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -72,22 +73,21 @@ type wallTicker struct{ *time.Ticker }
 
 func (ticker wallTicker) C() <-chan time.Time { return ticker.Ticker.C }
 
-// Config injects the coordinator, immutable state, clock and jitter source.
-// Rand returns a value in [0,1); it is called only under the supervisor lock.
+// Config injects the coordinator, immutable state and clock.
 type Config struct {
 	Controller   Controller
 	Snapshots    SnapshotSource
 	RefreshEvery time.Duration
 	Clock        Clock
 	Now          func() time.Time
-	Rand         func() float64
 	OnRefresh    func(provider.ID, error)
 }
 
 type account struct {
 	operation sync.Mutex
-	status    Status // guarded by Supervisor.mu
-	running   bool   // guarded by Supervisor.mu
+	status    Status                     // guarded by Supervisor.mu
+	running   bool                       // guarded by Supervisor.mu
+	backoff   backoff.ExponentialBackOff // guarded by Supervisor.mu
 }
 
 // Supervisor serializes work within each provider, never across providers.
@@ -97,7 +97,6 @@ type Supervisor struct {
 	controller Controller
 	snapshots  SnapshotSource
 	clock      Clock
-	rand       func() float64
 	onRefresh  func(provider.ID, error)
 
 	mu       sync.Mutex
@@ -117,12 +116,9 @@ func New(config Config) (*Supervisor, error) {
 		}
 		config.Clock = wallClock{now: config.Now}
 	}
-	if config.Rand == nil {
-		config.Rand = rand.Float64
-	}
 	supervisor := &Supervisor{
 		controller: config.Controller, snapshots: config.Snapshots, clock: config.Clock,
-		rand: config.Rand, onRefresh: config.OnRefresh, every: config.RefreshEvery,
+		onRefresh: config.OnRefresh, every: config.RefreshEvery,
 		accounts: make(map[provider.ID]*account),
 	}
 	supervisor.reconcile()
@@ -237,6 +233,7 @@ func (supervisor *Supervisor) RecordSuccess(id provider.ID) {
 	defer supervisor.mu.Unlock()
 	if account := supervisor.accounts[id]; account != nil {
 		now := supervisor.clock.Now().UTC()
+		account.backoff.Reset()
 		account.status = Status{Status: StatusOK, LastSuccess: now, NextRun: refreshAt(now, current.ExpiresAt, supervisor.every)}
 	}
 }
@@ -260,10 +257,16 @@ func (supervisor *Supervisor) reconcile() {
 			continue
 		}
 		lastSuccess := current.CreatedAt.UTC()
-		supervisor.accounts[id] = &account{status: Status{
-			Status: StatusOK, LastSuccess: lastSuccess,
-			NextRun: refreshAt(lastSuccess, snapshot.ExpiresAt, supervisor.every),
-		}}
+		supervisor.accounts[id] = &account{
+			status: Status{
+				Status: StatusOK, LastSuccess: lastSuccess,
+				NextRun: refreshAt(lastSuccess, snapshot.ExpiresAt, supervisor.every),
+			},
+			backoff: backoff.ExponentialBackOff{
+				InitialInterval: minBackoff, RandomizationFactor: 0.2,
+				Multiplier: 2, MaxInterval: maxBackoff,
+			},
+		}
 	}
 }
 
@@ -312,15 +315,20 @@ func (supervisor *Supervisor) refresh(ctx context.Context, id provider.ID, accou
 		account.running = false
 		switch {
 		case err == nil:
+			account.backoff.Reset()
 			account.status = Status{Status: StatusOK, LastSuccess: now, NextRun: refreshAt(now, current.ExpiresAt, supervisor.every)}
 		case errors.Is(err, provider.ErrSessionRejected):
+			// Rejection still counts as a failed attempt if a later manual retry
+			// fails transiently before a successful refresh or login resets it.
+			_ = account.backoff.NextBackOff()
 			account.status.Status = StatusNeedsRelogin
 			account.status.Attempts++
 			account.status.NextRun = time.Time{}
 		default:
 			account.status.Status = StatusRefreshFailing
 			account.status.Attempts++
-			account.status.NextRun = now.Add(supervisor.backoff(account.status.Attempts))
+			// MaxInterval bounds the base interval; cap the randomized delay too.
+			account.status.NextRun = now.Add(min(account.backoff.NextBackOff(), maxBackoff))
 		}
 	}
 	supervisor.mu.Unlock()
@@ -336,16 +344,6 @@ func (supervisor *Supervisor) clearRunning(id provider.ID, account *account) {
 	if supervisor.accounts[id] == account {
 		account.running = false
 	}
-}
-
-func (supervisor *Supervisor) backoff(attempt int) time.Duration {
-	// Saturate before shifting, so years of failures cannot overflow duration.
-	delay := maxBackoff
-	if attempt < 6 {
-		delay = minBackoff << (attempt - 1)
-	}
-	delay = time.Duration(float64(delay) * (0.8 + 0.4*supervisor.rand()))
-	return min(delay, maxBackoff)
 }
 
 func refreshAt(lastSuccess, expiresAt time.Time, every time.Duration) time.Time {

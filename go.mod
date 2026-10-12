@@ -5,6 +5,7 @@ go 1.26.0
 toolchain go1.26.5
 
 require (
+	github.com/cenkalti/backoff/v5 v5.0.3
 	go.yaml.in/yaml/v3 v3.0.5
 	golang.org/x/crypto v0.51.0
 	golang.org/x/net v0.55.0

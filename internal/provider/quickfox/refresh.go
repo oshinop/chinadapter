@@ -7,6 +7,8 @@ import (
 	"net/http"
 	"time"
 
+	"github.com/cenkalti/backoff/v5"
+
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
@@ -15,25 +17,40 @@ import (
 // non-rejection failures on its longer schedule.
 func (driver *Driver) retryCatalog(ctx context.Context, token, deviceCode string) (catalog, error) {
 	const attempts = 3
-	for attempt := range attempts {
+	value, err := backoff.Retry(ctx, func() (catalog, error) {
 		if err := ctx.Err(); err != nil {
-			return catalog{}, err
+			return catalog{}, backoff.Permanent(err)
 		}
 		value, err := driver.client.Catalog(ctx, token, deviceCode)
-		if err == nil || !retryable(err) || attempt+1 == attempts {
-			return value, err
+		if err != nil && !retryable(err) {
+			return value, backoff.Permanent(err)
 		}
-		timer := time.NewTimer((250 * time.Millisecond) << attempt)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return catalog{}, ctx.Err()
-		case <-timer.C:
-		}
+		return value, err
+	}, backoff.WithBackOff(newCatalogBackOff()), backoff.WithMaxTries(attempts), backoff.WithMaxElapsedTime(0))
+	// Retry checks its attempt limit before unwrapping permanent errors.
+	var permanent *backoff.PermanentError
+	if errors.As(err, &permanent) {
+		err = permanent.Unwrap()
 	}
-	return catalog{}, nil
+	if err != nil && ctx.Err() != nil && errors.Is(err, context.Cause(ctx)) {
+		return catalog{}, ctx.Err()
+	}
+	return value, err
+}
+
+// Clamp randomized delays too: the previous three-attempt schedule never
+// waited longer than 500ms between requests.
+type catalogBackOff struct{ backoff.ExponentialBackOff }
+
+func newCatalogBackOff() *catalogBackOff {
+	return &catalogBackOff{backoff.ExponentialBackOff{
+		InitialInterval: 250 * time.Millisecond, RandomizationFactor: backoff.DefaultRandomizationFactor,
+		Multiplier: 2, MaxInterval: 500 * time.Millisecond,
+	}}
+}
+
+func (policy *catalogBackOff) NextBackOff() time.Duration {
+	return min(policy.ExponentialBackOff.NextBackOff(), policy.MaxInterval)
 }
 
 func retryable(err error) bool {

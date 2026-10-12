@@ -7,33 +7,30 @@ import (
 	"net/http"
 	"time"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	"github.com/cenkalti/backoff/v5"
 )
 
 func retry[T any](ctx context.Context, driver *Driver, call func() (T, error)) (T, error) {
 	var zero T
-	for attempt := range driver.attempts {
-		select {
-		case <-ctx.Done():
-			return zero, ctx.Err()
-		default:
+	value, err := backoff.Retry(ctx, func() (T, error) {
+		if err := ctx.Err(); err != nil {
+			return zero, backoff.Permanent(err)
 		}
 		value, err := call()
-		if err == nil || !retryable(err) || attempt+1 == driver.attempts {
-			return value, err
+		if err != nil && !retryable(err) {
+			return value, backoff.Permanent(err)
 		}
-		delay := retryDelay(driver, attempt)
-		timer := time.NewTimer(delay)
-		select {
-		case <-ctx.Done():
-			if !timer.Stop() {
-				<-timer.C
-			}
-			return zero, ctx.Err()
-		case <-timer.C:
-		}
+		return value, err
+	}, backoff.WithBackOff(newRetryBackOff(driver)), backoff.WithMaxTries(uint(driver.attempts)), backoff.WithMaxElapsedTime(0))
+	// Retry checks its attempt limit before unwrapping permanent errors.
+	var permanent *backoff.PermanentError
+	if errors.As(err, &permanent) {
+		err = permanent.Unwrap()
 	}
-	return zero, nil
+	if err != nil && ctx.Err() != nil && errors.Is(err, context.Cause(ctx)) {
+		return zero, ctx.Err()
+	}
+	return value, err
 }
 
 func retryable(err error) bool {
@@ -51,18 +48,17 @@ func retryable(err error) bool {
 	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) //nolint:staticcheck // Temporary is the errno-level signal net.OpError exposes; dropping it would stop retrying resets and descriptor exhaustion.
 }
 
-func retryDelay(driver *Driver, attempt int) time.Duration {
-	base := driver.backoff
-	for range attempt {
-		if base >= driver.maxBackoff/2 {
-			base = driver.maxBackoff
-			break
-		}
-		base *= 2
-	}
-	jitter, err := wireprofile.RandomInt(driver.clients[0].random, int(base/time.Millisecond)+1)
-	if err != nil {
-		return base
-	}
-	return time.Duration(jitter) * time.Millisecond
+// MaxInterval caps the library's base interval, not its randomized delay.
+// Clamp the latter as well to preserve the configured request delay ceiling.
+type retryBackOff struct{ backoff.ExponentialBackOff }
+
+func newRetryBackOff(driver *Driver) *retryBackOff {
+	return &retryBackOff{backoff.ExponentialBackOff{
+		InitialInterval: driver.backoff, RandomizationFactor: backoff.DefaultRandomizationFactor,
+		Multiplier: 2, MaxInterval: driver.maxBackoff,
+	}}
+}
+
+func (policy *retryBackOff) NextBackOff() time.Duration {
+	return min(policy.ExponentialBackOff.NextBackOff(), policy.MaxInterval)
 }

@@ -110,3 +110,22 @@ func TestTemporaryAcceptErrorClassification(t *testing.T) {
 		t.Fatal("unknown accept failure must not be retried")
 	}
 }
+
+func TestAcceptBackoffIntervalsCapAndReset(t *testing.T) {
+	policy := newAcceptBackOff()
+	intervals := []time.Duration{
+		5 * time.Millisecond, 10 * time.Millisecond, 20 * time.Millisecond,
+		40 * time.Millisecond, 80 * time.Millisecond, 160 * time.Millisecond,
+		320 * time.Millisecond, 640 * time.Millisecond, time.Second,
+	}
+	for attempt := range 100 {
+		want := intervals[min(attempt, len(intervals)-1)]
+		if delay := policy.NextBackOff(); delay != want {
+			t.Fatalf("accept delay %d = %s, want %s", attempt+1, delay, want)
+		}
+	}
+	policy.Reset()
+	if delay := policy.NextBackOff(); delay != 5*time.Millisecond {
+		t.Fatalf("accept delay after reset = %s, want 5ms", delay)
+	}
+}

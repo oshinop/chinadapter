@@ -193,7 +193,7 @@ func (builder selectorBuilder) Build(nodes []state.Node) (map[string]state.NodeR
 
 func (fixture *fixture) supervisor(t *testing.T, every time.Duration) *Supervisor {
 	t.Helper()
-	supervisor, err := New(Config{Controller: fixture.coordinator, Snapshots: fixture.manager, Clock: fixture.clock, Rand: func() float64 { return 0.5 }, RefreshEvery: every})
+	supervisor, err := New(Config{Controller: fixture.coordinator, Snapshots: fixture.manager, Clock: fixture.clock, RefreshEvery: every})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -429,20 +429,90 @@ func TestSupervisorTickRechecksWallClockAfterSleep(t *testing.T) {
 	}
 }
 
-func TestBackoffJitterAndCap(t *testing.T) {
-	for _, random := range []float64{0, 0.5, 0.999999} {
-		supervisor := &Supervisor{rand: func() float64 { return random }}
-		for attempt := range 100 {
-			base := maxBackoff
-			if attempt < 5 {
-				base = minBackoff << attempt
-			}
-			delay := supervisor.backoff(attempt + 1)
-			if delay < time.Duration(float64(base)*0.8) || delay > min(time.Duration(float64(base)*1.2), maxBackoff) {
-				t.Fatalf("backoff attempt %d rand %.6f = %s outside jitter/cap", attempt+1, random, delay)
-			}
+func TestManualTransientFailureAfterRejectionKeepsBackoffProgress(t *testing.T) {
+	fixture := newFixture(t, "alpha")
+	driver := fixture.drivers[0]
+	driver.refresh = func(context.Context, provider.Snapshot) (provider.Snapshot, error) {
+		return provider.Snapshot{}, provider.ErrSessionRejected
+	}
+	supervisor := fixture.supervisor(t, time.Hour)
+	for range 2 {
+		if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, provider.ErrSessionRejected) {
+			t.Fatal(err)
+		}
+		if status := supervisor.Status()["alpha"]; status.Status != StatusNeedsRelogin || !status.NextRun.IsZero() {
+			t.Fatalf("rejection scheduled an automatic retry: %+v", status)
 		}
 	}
+	failure := errors.New("temporary network failure")
+	driver.refresh = func(context.Context, provider.Snapshot) (provider.Snapshot, error) {
+		return provider.Snapshot{}, failure
+	}
+	if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	status := supervisor.Status()["alpha"]
+	delay := status.NextRun.Sub(fixture.clock.Now())
+	if status.Status != StatusRefreshFailing || status.Attempts != 3 || delay < 192*time.Second || delay > 288*time.Second {
+		t.Fatalf("manual third failure lost backoff progression: %+v, delay %s", status, delay)
+	}
+}
+
+func TestBackoffJitterAndCap(t *testing.T) {
+	fixture := newFixture(t, "alpha", "beta")
+	failure := errors.New("temporary network failure")
+	for _, driver := range fixture.drivers {
+		driver.refresh = func(context.Context, provider.Snapshot) (provider.Snapshot, error) {
+			return provider.Snapshot{}, failure
+		}
+	}
+	supervisor := fixture.supervisor(t, time.Hour)
+	bases := []time.Duration{time.Minute, 2 * time.Minute, 4 * time.Minute, 8 * time.Minute, 16 * time.Minute, maxBackoff}
+	assertDelay := func(id provider.ID, base time.Duration, attempts int) {
+		t.Helper()
+		status := supervisor.Status()[id]
+		delay := status.NextRun.Sub(fixture.clock.Now())
+		minimum := time.Duration(float64(base) * 0.8)
+		maximum := min(time.Duration(float64(base)*1.2), maxBackoff)
+		if status.Status != StatusRefreshFailing || status.Attempts != attempts || delay < minimum || delay > maximum {
+			t.Fatalf("provider %s attempt %d = %+v, delay %s outside [%s, %s]", id, attempts, status, delay, minimum, maximum)
+		}
+	}
+	for attempt := range 100 {
+		if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, failure) {
+			t.Fatal(err)
+		}
+		assertDelay("alpha", bases[min(attempt, len(bases)-1)], attempt+1)
+	}
+	if err := supervisor.Trigger(t.Context(), "beta"); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	assertDelay("beta", minBackoff, 1)
+	if fixture.drivers[0].calls() != 100 || fixture.drivers[1].calls() != 1 {
+		t.Fatalf("independent retry counts = %d / %d", fixture.drivers[0].calls(), fixture.drivers[1].calls())
+	}
+	// Both a successful refresh and a successful login restart the schedule.
+	fixture.drivers[0].refresh = nil
+	if err := supervisor.Trigger(t.Context(), "alpha"); err != nil {
+		t.Fatal(err)
+	}
+	if status := supervisor.Status()["alpha"]; status.Status != StatusOK || status.Attempts != 0 {
+		t.Fatalf("successful refresh did not reset failures: %+v", status)
+	}
+	fixture.drivers[0].refresh = func(context.Context, provider.Snapshot) (provider.Snapshot, error) {
+		return provider.Snapshot{}, failure
+	}
+	for attempt := range 2 {
+		if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, failure) {
+			t.Fatal(err)
+		}
+		assertDelay("alpha", bases[attempt], attempt+1)
+	}
+	supervisor.RecordSuccess("alpha")
+	if err := supervisor.Trigger(t.Context(), "alpha"); !errors.Is(err, failure) {
+		t.Fatal(err)
+	}
+	assertDelay("alpha", minBackoff, 1)
 }
 
 func TestGlobalRefreshCommitsHealthySiblingWithoutCancellation(t *testing.T) {

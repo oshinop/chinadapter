@@ -351,6 +351,59 @@ func TestRetryRetriesTemporaryTransportFailures(t *testing.T) {
 	}
 }
 
+func TestRetryBackoffJitterAndCap(t *testing.T) {
+	driver := &Driver{backoff: 250 * time.Millisecond, maxBackoff: 5 * time.Second}
+	bases := []time.Duration{250 * time.Millisecond, 500 * time.Millisecond, time.Second, 2 * time.Second, 4 * time.Second, 5 * time.Second}
+	for range 100 {
+		policy := newRetryBackOff(driver)
+		for attempt := range 100 {
+			base := bases[min(attempt, len(bases)-1)]
+			delay := policy.NextBackOff()
+			minimum, maximum := base/2, min(base+base/2, driver.maxBackoff)
+			if delay < minimum || delay > maximum {
+				t.Fatalf("retry delay %d = %s outside [%s, %s]", attempt+1, delay, minimum, maximum)
+			}
+		}
+		policy.Reset()
+		if delay := policy.NextBackOff(); delay < 125*time.Millisecond || delay > 375*time.Millisecond {
+			t.Fatalf("reset delay = %s, want initial interval jitter", delay)
+		}
+	}
+}
+
+func TestRetryPreservesFinalResultAndError(t *testing.T) {
+	for _, attempts := range []int{1, 3, 5} {
+		for _, failure := range []error{ErrSchema, temporaryTransportError{}} {
+			driver := &Driver{attempts: attempts, backoff: time.Millisecond, maxBackoff: time.Millisecond}
+			calls := 0
+			value, err := retry(t.Context(), driver, func() (int, error) {
+				calls++
+				return 42, failure
+			})
+			wantCalls := attempts
+			if !retryable(failure) {
+				wantCalls = 1
+			}
+			if value != 42 || !errors.Is(err, failure) || reflect.TypeOf(err) != reflect.TypeOf(failure) || calls != wantCalls {
+				t.Fatalf("retry with %d attempts and %v = %d, %v after %d calls, want original result/error after %d", attempts, failure, value, err, calls, wantCalls)
+			}
+		}
+	}
+}
+
+func TestRetryCancelledParentMakesNoRequest(t *testing.T) {
+	ctx, cancel := context.WithCancelCause(t.Context())
+	cancel(errors.New("parent stopped"))
+	calls := 0
+	value, err := retry(ctx, &Driver{attempts: 3, backoff: time.Millisecond, maxBackoff: time.Millisecond}, func() (int, error) {
+		calls++
+		return 42, nil
+	})
+	if value != 0 || !errors.Is(err, context.Canceled) || calls != 0 {
+		t.Fatalf("cancelled parent = %d, %v after %d calls", value, err, calls)
+	}
+}
+
 type temporaryTransportError struct{}
 
 func (temporaryTransportError) Error() string   { return "temporary transport failure" }
