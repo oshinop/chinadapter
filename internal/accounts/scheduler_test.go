@@ -13,7 +13,6 @@ import (
 
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/coordinator"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
@@ -92,7 +91,7 @@ func testSnapshot(id provider.ID, now time.Time) provider.Snapshot {
 type fixture struct {
 	store       *state.SQLiteStore
 	manager     *state.Manager
-	coordinator *coordinator.Coordinator
+	coordinator *Coordinator
 	clock       *fakeClock
 	drivers     []*fakeDriver
 }
@@ -162,7 +161,7 @@ func (fixture *fixture) restore(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.coordinator, err = coordinator.New(coordinator.Config{
+	fixture.coordinator, err = NewCoordinator(CoordinatorConfig{
 		Providers: providers, Manager: manager, SelectorBuilder: selectorBuilder{authority}, Clock: fixture.clock.Now,
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
 			persistent, err := fixture.store.Update(t.Context(), func(candidate *state.PersistentState) error {

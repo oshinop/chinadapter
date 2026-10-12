@@ -9,8 +9,8 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/coordinator"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
@@ -43,7 +43,7 @@ type runtimeFixture struct {
 	runtime     *Runtime
 	store       *state.SQLiteStore
 	manager     *state.Manager
-	coordinator *coordinator.Coordinator
+	coordinator *accounts.Coordinator
 	drivers     []*runtimeDriver
 	now         time.Time
 }
@@ -91,7 +91,7 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 	if err != nil {
 		t.Fatal(err)
 	}
-	fixture.coordinator, err = coordinator.New(coordinator.Config{
+	fixture.coordinator, err = accounts.NewCoordinator(accounts.CoordinatorConfig{
 		Providers: providers, Manager: manager, SelectorBuilder: credentials, MutationMu: mutations,
 		Clock: func() time.Time { return now },
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {

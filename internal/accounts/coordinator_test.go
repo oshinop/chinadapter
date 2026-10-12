@@ -1,4 +1,4 @@
-package coordinator
+package accounts
 
 import (
 	"github.com/kfadapter/kfadapter/internal/state"

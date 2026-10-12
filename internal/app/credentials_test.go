@@ -16,9 +16,9 @@ import (
 	"testing"
 	"time"
 
+	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/coordinator"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
 	"github.com/kfadapter/kfadapter/internal/subscription"
@@ -117,7 +117,7 @@ func newStableHarness(t *testing.T, directory string) *stableHarness {
 	}
 	mutations := &sync.Mutex{}
 	harness := &stableHarness{store: store, service: service, socks: socksServer, drivers: drivers}
-	controller, err := coordinator.New(coordinator.Config{Providers: registry, Manager: manager, SelectorBuilder: credentials, MutationMu: mutations, CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
+	controller, err := accounts.NewCoordinator(accounts.CoordinatorConfig{Providers: registry, Manager: manager, SelectorBuilder: credentials, MutationMu: mutations, CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {
 		return harness.runtime.CommitControlSnapshotLocked(snapshot)
 	}})
 	if err != nil {

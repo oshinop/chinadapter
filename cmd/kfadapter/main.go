@@ -19,12 +19,12 @@ import (
 	"time"
 	_ "time/tzdata"
 
+	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/app"
 	"github.com/kfadapter/kfadapter/internal/config"
 	"github.com/kfadapter/kfadapter/internal/kuaifan"
 	"github.com/kfadapter/kfadapter/internal/lifecycle"
 	"github.com/kfadapter/kfadapter/internal/provider"
-	providercoordinator "github.com/kfadapter/kfadapter/internal/provider/coordinator"
 	"github.com/kfadapter/kfadapter/internal/quickfox"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -270,7 +270,7 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 		return nil, err
 	}
 	var runtimeFacade *app.Runtime
-	providerCoordinator, err := providercoordinator.New(providercoordinator.Config{
+	providerCoordinator, err := accounts.NewCoordinator(accounts.CoordinatorConfig{
 		Providers: providers, Manager: manager, SelectorBuilder: credentialCoordinator,
 		MutationMu: mutationMu,
 		CommitSnapshot: func(snapshot *state.RuntimeSnapshot) error {

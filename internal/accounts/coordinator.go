@@ -1,6 +1,6 @@
-// Package coordinator serializes provider account lifecycle operations and
+// Package accounts serializes provider account lifecycle operations and
 // publishes one atomic provider-neutral runtime aggregate.
-package coordinator
+package accounts
 
 import (
 	"context"
@@ -14,8 +14,8 @@ import (
 	"github.com/kfadapter/kfadapter/internal/state"
 )
 
-// Config wires provider drivers to generic state publication.
-type Config struct {
+// CoordinatorConfig wires provider drivers to generic state publication.
+type CoordinatorConfig struct {
 	Providers       *provider.Registry
 	Manager         *state.Manager
 	SelectorBuilder state.SelectorBuilder
@@ -35,7 +35,7 @@ type Coordinator struct {
 	locks     map[provider.ID]*sync.Mutex
 }
 
-func New(config Config) (*Coordinator, error) {
+func NewCoordinator(config CoordinatorConfig) (*Coordinator, error) {
 	if config.Providers == nil || config.Manager == nil || config.SelectorBuilder == nil || config.CommitSnapshot == nil {
 		return nil, errors.New("provider coordinator: incomplete configuration")
 	}
