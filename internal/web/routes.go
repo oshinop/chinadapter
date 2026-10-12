@@ -2,7 +2,6 @@ package web
 
 import (
 	"net/http"
-	"strings"
 )
 
 // apiRoute keeps method negotiation separate from the browser security boundary:
@@ -61,38 +60,6 @@ func (a *API) newHandler() http.Handler {
 	return mux
 }
 
-func (a *API) browserBoundary(route apiRoute) http.Handler {
-	return http.HandlerFunc(func(w http.ResponseWriter, r *http.Request) {
-		setNoStore(w.Header())
-		var token string
-		var session browserSession
-		if !route.public {
-			var authenticated bool
-			token, session, authenticated = a.authenticate(r)
-			if !authenticated {
-				a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required")
-				return
-			}
-		}
-		mutation := route.method == http.MethodPost
-		if mutation || route.path == "/api/v1/events" {
-			if !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
-				a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin")
-				return
-			}
-		}
-		if mutation && !route.public && !exactSecretEqual(session.csrf, r.Header.Get(csrfHeaderName)) {
-			a.writeProblem(w, http.StatusForbidden, "csrf_failed", "CSRF validation failed")
-			return
-		}
-		if mutation && !isJSONContentType(r.Header.Get("Content-Type")) {
-			a.writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Unsupported Content Type")
-			return
-		}
-		route.handler(w, r, token, session)
-	})
-}
-
 // HEAD follows GET routing and status negotiation without emitting a body.
 type headResponseWriter struct{ http.ResponseWriter }
 
@@ -102,19 +69,4 @@ func (w headResponseWriter) Flush() {
 	if flusher, ok := w.ResponseWriter.(http.Flusher); ok {
 		flusher.Flush()
 	}
-}
-
-// Subscription paths retain the deliberately empty failure contract, including
-// malformed UUIDs and unsupported methods. They are not browser API routes.
-func (a *API) serveSubscription(w http.ResponseWriter, r *http.Request) bool {
-	if r.URL.Path != "/sub" && !strings.HasPrefix(r.URL.Path, "/sub/") {
-		return false
-	}
-	binding, _ := subscriptionPath(r.URL.EscapedPath())
-	if a.subscriptions == nil {
-		writeEmptyNotFound(w)
-	} else {
-		a.subscriptions.ServeSubscription(w, r, binding, a.socksAddress(r))
-	}
-	return true
 }
