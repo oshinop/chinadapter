@@ -1,4 +1,5 @@
-package state
+// Package store owns the adapter's secure SQLite persistence.
+package store
 
 import (
 	"context"
@@ -15,6 +16,8 @@ import (
 	"time"
 
 	"modernc.org/sqlite"
+
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
 const (
@@ -23,6 +26,7 @@ const (
 	MaxPersistentStateBytes = 10 << 20
 	maxSQLiteStateBytes     = MaxPersistentStateBytes + 8<<20
 	maxBrowserSessions      = 4096
+	maxSessionLifetime      = 24 * time.Hour
 )
 
 // SQLiteStore owns one secure, relational state database. The store exposes one
@@ -34,7 +38,7 @@ type SQLiteStore struct {
 
 	mu              sync.Mutex
 	db              *sql.DB
-	initializeState func(context.Context, *sql.DB, PersistentState) error
+	initializeState func(context.Context, *sql.DB, domain.PersistentState) error
 	now             func() time.Time
 }
 
@@ -42,7 +46,7 @@ type SQLiteStore struct {
 // creates or weakens the directory; LoadOrCreate creates state.db directly.
 func NewSQLiteStore(dir string, options ...StoreOption) (*SQLiteStore, error) {
 	if dir == "" {
-		return nil, fmt.Errorf("empty state directory: %w", ErrInsecureStatePath)
+		return nil, fmt.Errorf("empty state directory: %w", domain.ErrInsecureStatePath)
 	}
 	clean := filepath.Clean(dir)
 	if err := ValidateStateDir(clean); err != nil {
@@ -91,7 +95,7 @@ func (s *SQLiteStore) Close(_ context.Context) error {
 	return nil
 }
 
-func (s *SQLiteStore) ensureOpenLocked(ctx context.Context, create bool, initial *PersistentState) (bool, error) {
+func (s *SQLiteStore) ensureOpenLocked(ctx context.Context, create bool, initial *domain.PersistentState) (bool, error) {
 	if err := s.validate(); err != nil {
 		return false, err
 	}
@@ -107,7 +111,7 @@ func (s *SQLiteStore) ensureOpenLocked(ctx context.Context, create bool, initial
 	}
 	if !exists {
 		if !create || initial == nil {
-			return false, ErrStateNotFound
+			return false, domain.ErrStateNotFound
 		}
 		if err := validateEmptyStateDir(s.dir); err != nil {
 			return false, err
@@ -159,9 +163,9 @@ func (s *SQLiteStore) openExistingLocked(ctx context.Context) error {
 
 // createInitialStateLocked creates state.db at its final path and removes an
 // incomplete database so a later LoadOrCreate can retry safely.
-func (s *SQLiteStore) createInitialStateLocked(ctx context.Context, initial PersistentState) (created bool, err error) {
+func (s *SQLiteStore) createInitialStateLocked(ctx context.Context, initial domain.PersistentState) (created bool, err error) {
 	if s.initializeState == nil {
-		return false, ErrInsecureStatePath
+		return false, domain.ErrInsecureStatePath
 	}
 	cleanup := false
 	defer func() {
@@ -297,92 +301,92 @@ func configureSQLiteDurability(ctx context.Context, db *sql.DB) error {
 }
 
 // Load reconstructs an aggregate in a read-only transaction, without pruning.
-func (s *SQLiteStore) Load(ctx context.Context) (PersistentState, error) {
+func (s *SQLiteStore) Load(ctx context.Context) (domain.PersistentState, error) {
 	if s == nil {
-		return PersistentState{}, ErrInsecureStatePath
+		return domain.PersistentState{}, domain.ErrInsecureStatePath
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.ensureOpenLocked(ctx, false, nil); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	return s.loadLocked(ctx)
 }
 
-func (s *SQLiteStore) loadLocked(ctx context.Context) (PersistentState, error) {
+func (s *SQLiteStore) loadLocked(ctx context.Context) (domain.PersistentState, error) {
 	tx, err := s.db.BeginTx(ctx, &sql.TxOptions{ReadOnly: true})
 	if err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	defer tx.Rollback()
 	state, err := loadPersistentStateTx(ctx, tx)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if err := tx.Commit(); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	return state, nil
 }
 
 // LoadOrCreate loads an existing state.db or transactionally creates a fresh
 // SQLite aggregate after its optional semantic validation succeeds.
-func (s *SQLiteStore) LoadOrCreate(ctx context.Context, semantic ...func(PersistentState) error) (PersistentState, error) {
+func (s *SQLiteStore) LoadOrCreate(ctx context.Context, semantic ...func(domain.PersistentState) error) (domain.PersistentState, error) {
 	if s == nil {
-		return PersistentState{}, ErrInsecureStatePath
+		return domain.PersistentState{}, domain.ErrInsecureStatePath
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if err := s.validate(); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	exists, err := stateFileExists(s.path, maxSQLiteStateBytes)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if exists {
 		if _, err := s.ensureOpenLocked(ctx, false, nil); err != nil {
-			return PersistentState{}, err
+			return domain.PersistentState{}, err
 		}
 		loaded, err := s.loadLocked(ctx)
 		if err != nil {
-			return PersistentState{}, err
+			return domain.PersistentState{}, err
 		}
 		if err := validatePersistentStateSemantics(loaded, semantic); err != nil {
-			return PersistentState{}, err
+			return domain.PersistentState{}, err
 		}
 		return loaded, nil
 	}
 
-	initial, err := NewPersistentState()
+	initial, err := domain.NewPersistentState()
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if err := validatePersistentStateSemantics(initial, semantic); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	created, err := s.ensureOpenLocked(ctx, true, &initial)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if created {
 		return initial.Clone(), nil
 	}
 	loaded, err := s.loadLocked(ctx)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if err := validatePersistentStateSemantics(loaded, semantic); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	return loaded, nil
 }
 
 // Save atomically replaces only the normalized PersistentState tables. It
 // deliberately leaves browser_sessions intact.
-func (s *SQLiteStore) Save(ctx context.Context, state PersistentState) error {
+func (s *SQLiteStore) Save(ctx context.Context, state domain.PersistentState) error {
 	if s == nil {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -396,7 +400,7 @@ func (s *SQLiteStore) Save(ctx context.Context, state PersistentState) error {
 	return s.saveLocked(ctx, state)
 }
 
-func (s *SQLiteStore) saveLocked(ctx context.Context, state PersistentState) error {
+func (s *SQLiteStore) saveLocked(ctx context.Context, state domain.PersistentState) error {
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
 		return corruptDatabase(err)
@@ -416,57 +420,57 @@ func (s *SQLiteStore) saveLocked(ctx context.Context, state PersistentState) err
 
 // Update performs load-modify-save as one SQLite transaction. A callback error
 // or validation failure rolls back without changing the previous aggregate.
-func (s *SQLiteStore) Update(ctx context.Context, change func(*PersistentState) error) (PersistentState, error) {
+func (s *SQLiteStore) Update(ctx context.Context, change func(*domain.PersistentState) error) (domain.PersistentState, error) {
 	if s == nil || change == nil {
-		return PersistentState{}, ErrInsecureStatePath
+		return domain.PersistentState{}, domain.ErrInsecureStatePath
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
 	if _, err := s.ensureOpenLocked(ctx, false, nil); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	tx, err := s.db.BeginTx(ctx, nil)
 	if err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	defer tx.Rollback()
 	current, err := loadPersistentStateTx(ctx, tx)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if err := validateBrowserSessionsTx(ctx, tx, s.now().UTC(), maxBrowserSessions, true); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	candidate := current.Clone()
 	if err := change(&candidate); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if err := replacePersistentStateTx(ctx, tx, candidate); err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	if current.AccessTokenVerifier != nil && candidate.AccessTokenVerifier != nil && subtle.ConstantTimeCompare(current.AccessTokenVerifier.Hash, candidate.AccessTokenVerifier.Hash) != 1 {
 		if _, err := tx.ExecContext(ctx, "DELETE FROM browser_sessions"); err != nil {
-			return PersistentState{}, corruptDatabase(err)
+			return domain.PersistentState{}, corruptDatabase(err)
 		}
 	}
 	if err := tx.Commit(); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	return candidate.Clone(), nil
 }
 
 func corruptDatabase(err error) error {
-	if err == nil || errors.Is(err, ErrCorruptState) || errors.Is(err, ErrStateBusy) {
+	if err == nil || errors.Is(err, domain.ErrCorruptState) || errors.Is(err, domain.ErrStateBusy) {
 		return err
 	}
 	var sqliteError *sqlite.Error
 	if errors.As(err, &sqliteError) && sqliteError.Code()&0xff == 5 {
-		return fmt.Errorf("%w: %w", ErrStateBusy, err)
+		return fmt.Errorf("%w: %w", domain.ErrStateBusy, err)
 	}
 	if errors.Is(err, context.Canceled) || errors.Is(err, context.DeadlineExceeded) {
 		return err
 	}
-	return fmt.Errorf("%w: %w", ErrCorruptState, err)
+	return fmt.Errorf("%w: %w", domain.ErrCorruptState, err)
 }
 
 func syncStateFile(path string) error {

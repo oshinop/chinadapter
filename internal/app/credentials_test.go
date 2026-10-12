@@ -21,6 +21,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
 )
@@ -60,7 +61,7 @@ func (driver *stableDriver) Refresh(_ context.Context, previous provider.Snapsho
 
 type stableHarness struct {
 	runtime *Runtime
-	store   *state.SQLiteStore
+	store   *store.SQLiteStore
 	service *subscription.Service
 	socks   *socks.Server
 	api     *web.API
@@ -75,7 +76,7 @@ func newStableHarness(t *testing.T, directory string) *stableHarness {
 			t.Fatal(err)
 		}
 	}
-	store, err := state.NewSQLiteStore(directory)
+	store, err := store.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -11,6 +11,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
 
@@ -39,7 +40,7 @@ type SubscriptionPublisher interface {
 // absent from this configuration.
 type RuntimeConfig struct {
 	Manager       *state.Manager
-	Store         *state.SQLiteStore
+	Store         *store.SQLiteStore
 	Providers     ProviderController
 	Subscriptions SubscriptionPublisher
 	Accounts      accounts.Lifecycle
@@ -64,7 +65,7 @@ type RuntimeConfig struct {
 // durable preferences, and subscription publishing.
 type Runtime struct {
 	manager       *state.Manager
-	store         *state.SQLiteStore
+	store         *store.SQLiteStore
 	providers     ProviderController
 	accounts      accounts.Lifecycle
 	subscriptions SubscriptionPublisher

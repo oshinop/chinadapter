@@ -14,6 +14,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
 
@@ -89,7 +90,7 @@ func testSnapshot(id provider.ID, now time.Time) provider.Snapshot {
 }
 
 type fixture struct {
-	store       *state.SQLiteStore
+	store       *store.SQLiteStore
 	manager     *state.Manager
 	coordinator *Coordinator
 	clock       *fakeClock
@@ -104,7 +105,7 @@ func newFixture(t *testing.T, ids ...provider.ID) *fixture {
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.NewSQLiteStore(directory)
+	store, err := store.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -357,7 +358,7 @@ func TestRestartWithStaleSnapshotRefreshesImmediately(t *testing.T) {
 		t.Fatal(err)
 	}
 	directory := filepath.Dir(fixture.store.Path())
-	reopened, err := state.NewSQLiteStore(directory)
+	reopened, err := store.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}

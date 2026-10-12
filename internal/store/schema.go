@@ -1,9 +1,11 @@
-package state
+package store
 
 import (
 	"context"
 	"database/sql"
 	"strings"
+
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
 var sqliteSchemaTables = map[string]int{
@@ -23,7 +25,7 @@ var sqliteSchemaStatements = func() []string {
 	return statements
 }()
 
-func initializeSQLiteSchemaAndState(ctx context.Context, db *sql.DB, initial PersistentState) error {
+func initializeSQLiteSchemaAndState(ctx context.Context, db *sql.DB, initial domain.PersistentState) error {
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return corruptDatabase(err)

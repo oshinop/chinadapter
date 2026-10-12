@@ -1,4 +1,4 @@
-package state
+package store
 
 import (
 	"context"
@@ -8,12 +8,14 @@ import (
 	"errors"
 	"fmt"
 	"time"
+
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
 // RestoreBrowserSessions restores hashed cookie identities and CSRF values.
 func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time, max int, add func(tokenHash []byte, csrf string, expiresAt time.Time) error) error {
 	if s == nil || add == nil || !validBrowserSessionLimit(max) {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	now = now.UTC()
 	s.mu.Lock()
@@ -62,12 +64,12 @@ func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time,
 // expired sessions and respecting the caller's configured maximum.
 func (s *SQLiteStore) SaveBrowserSession(ctx context.Context, token, csrf string, expiresAt time.Time, max int) error {
 	if s == nil || !validBrowserSessionLimit(max) {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	now := s.now().UTC()
 	expiresAt = expiresAt.UTC()
 	if !validBrowserSession(token, csrf, expiresAt, now) {
-		return ErrCorruptState
+		return domain.ErrCorruptState
 	}
 	hash := BrowserSessionTokenHash(token)
 	s.mu.Lock()
@@ -105,7 +107,7 @@ func (s *SQLiteStore) SaveBrowserSession(ctx context.Context, token, csrf string
 // DeleteBrowserSession durably revokes a hashed browser cookie identity.
 func (s *SQLiteStore) DeleteBrowserSession(ctx context.Context, hash []byte) error {
 	if s == nil || len(hash) != sha256.Size {
-		return ErrCorruptState
+		return domain.ErrCorruptState
 	}
 	s.mu.Lock()
 	defer s.mu.Unlock()
@@ -187,7 +189,7 @@ func validateBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, m
 
 func pruneBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, max int) error {
 	if !validBrowserSessionLimit(max) {
-		return ErrCorruptState
+		return domain.ErrCorruptState
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM browser_sessions WHERE expires_at_ns <= ?", nanos(now)); err != nil {
 		return corruptDatabase(err)

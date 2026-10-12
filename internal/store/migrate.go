@@ -1,10 +1,12 @@
-package state
+package store
 
 import (
 	"context"
 	"database/sql"
 	"errors"
 	"time"
+
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
 func migrateSQLiteSchema(ctx context.Context, db *sql.DB) error {
@@ -160,16 +162,16 @@ func migrateSQLiteV7ToV8(ctx context.Context, db *sql.DB) error {
 	if err := configureSQLiteDurability(ctx, db); err != nil {
 		return corruptDatabase(err)
 	}
-	selectorKey, err := randomBytes(32)
+	selectorKey, err := domain.RandomBytes(32)
 	if err != nil {
 		return err
 	}
-	defer wipeBytes(selectorKey)
-	proxyKey, err := randomBytes(32)
+	defer domain.WipeBytes(selectorKey)
+	proxyKey, err := domain.RandomBytes(32)
 	if err != nil {
 		return err
 	}
-	defer wipeBytes(proxyKey)
+	defer domain.WipeBytes(proxyKey)
 	tx, err := db.BeginTx(ctx, nil)
 	if err != nil {
 		return corruptDatabase(err)

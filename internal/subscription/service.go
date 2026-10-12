@@ -14,6 +14,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 )
 
 const (
@@ -23,7 +24,7 @@ const (
 )
 
 type ServiceConfig struct {
-	Store        *state.SQLiteStore
+	Store        *store.SQLiteStore
 	SocksAddress string
 }
 

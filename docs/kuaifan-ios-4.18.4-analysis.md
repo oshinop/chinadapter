@@ -172,7 +172,7 @@ internal/kuaifan/
   wifiin/             observed Fanster-branded WIFIIN TCP and UDP-over-TCP wire
 ```
 
-`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/state` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
+`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
 
 ## External references
 

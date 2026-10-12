@@ -1,4 +1,4 @@
-// Package state owns the adapter's durable state and immutable runtime view.
+// Package state owns the adapter's domain types and immutable runtime view.
 package state
 
 import (
@@ -18,10 +18,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
-const (
-	maxRuntimeNodes    = 4096
-	maxSessionLifetime = 24 * time.Hour
-)
+const maxRuntimeNodes = 4096
 
 var (
 	ErrAccessTokenAlreadyInitialized = errors.New("access token is already initialized")
@@ -187,15 +184,21 @@ func (s *RuntimeSnapshot) Clone() *RuntimeSnapshot {
 		clone.Providers[id] = snapshot.Clone()
 	}
 	clone.Nodes = append([]Node(nil), s.Nodes...)
-	clone.nodeIndex = make(map[string]int, len(clone.Nodes))
-	for index, node := range clone.Nodes {
-		clone.nodeIndex[node.ID] = index
-	}
+	clone.IndexNodes()
 	clone.Selectors = make(map[string]NodeRef, len(s.Selectors))
 	for selector, ref := range s.Selectors {
 		clone.Selectors[selector] = ref
 	}
 	return &clone
+}
+
+// IndexNodes rebuilds the node-ID lookup used by NodeByID. Call it after
+// constructing or replacing Nodes outside Clone.
+func (s *RuntimeSnapshot) IndexNodes() {
+	s.nodeIndex = make(map[string]int, len(s.Nodes))
+	for index, node := range s.Nodes {
+		s.nodeIndex[node.ID] = index
+	}
 }
 
 // Provider returns an independent snapshot for one configured account.
@@ -395,7 +398,7 @@ func NewAccessTokenVerifier(token string) (*AccessTokenVerifier, error) {
 	if !validAccessToken(token) {
 		return nil, ErrInvalidAccessToken
 	}
-	salt, err := randomBytes(accessTokenSaltBytes)
+	salt, err := RandomBytes(accessTokenSaltBytes)
 	if err != nil {
 		return nil, err
 	}
@@ -415,11 +418,12 @@ func (v *AccessTokenVerifier) VerifyAccessToken(token string) bool {
 		return false
 	}
 	actual := argon2.IDKey([]byte(token), v.Salt, v.Parameters.Iterations, v.Parameters.MemoryKiB, v.Parameters.Parallelism, accessTokenHashBytes)
-	defer wipeBytes(actual)
+	defer WipeBytes(actual)
 	return subtle.ConstantTimeCompare(actual, v.Hash) == 1
 }
 
-func wipeBytes(value []byte) {
+// WipeBytes clears transient secret material after use.
+func WipeBytes(value []byte) {
 	for index := range value {
 		value[index] = 0
 	}
@@ -427,7 +431,7 @@ func wipeBytes(value []byte) {
 
 // PersistentState is deliberately closed. It stores an Argon2id verifier but
 // never the raw local access token or provider account password. ActiveSession
-// is persisted only by SQLiteStore.
+// is persisted only by store.SQLiteStore.
 type PersistentState struct {
 	InstallationID      string
 	AccessTokenVerifier *AccessTokenVerifier
@@ -561,7 +565,8 @@ func ValidateNode(node Node) error {
 	return nil
 }
 
-func randomBytes(n int) ([]byte, error) {
+// RandomBytes returns cryptographically secure randomness for state authority.
+func RandomBytes(n int) ([]byte, error) {
 	value := make([]byte, n)
 	if _, err := rand.Read(value); err != nil {
 		return nil, fmt.Errorf("reading random bytes: %w", err)
@@ -570,7 +575,7 @@ func randomBytes(n int) ([]byte, error) {
 }
 
 func randomInstallationID() (string, error) {
-	value, err := randomBytes(16)
+	value, err := RandomBytes(16)
 	if err != nil {
 		return "", err
 	}

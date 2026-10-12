@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 )
 
 func TestSubscriptionMetadataHasNoFetchProof(t *testing.T) {
@@ -12,7 +12,7 @@ func TestSubscriptionMetadataHasNoFetchProof(t *testing.T) {
 	if err := os.Chmod(dir, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.NewSQLiteStore(dir)
+	store, err := store.NewSQLiteStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

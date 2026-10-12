@@ -12,6 +12,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/accounts"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
 )
@@ -41,7 +42,7 @@ func (driver *runtimeDriver) Refresh(ctx context.Context, previous provider.Snap
 
 type runtimeFixture struct {
 	runtime     *Runtime
-	store       *state.SQLiteStore
+	store       *store.SQLiteStore
 	manager     *state.Manager
 	coordinator *accounts.Coordinator
 	drivers     []*runtimeDriver
@@ -54,7 +55,7 @@ func newRuntimeFixture(t *testing.T, dial func(context.Context, string, string) 
 	if err := os.Chmod(directory, 0o700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.NewSQLiteStore(directory)
+	store, err := store.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}

@@ -18,6 +18,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/lifecycle"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 )
 
 func TestHealthcheckUsesConfiguredWildcardListeners(t *testing.T) {
@@ -175,7 +176,7 @@ func TestPersistedProviderSessionRestoresAcrossAdapterRestart(t *testing.T) {
 	cfg.ListenAddr = "127.0.0.1"
 	cfg.Management.Port = config.Port(freePort(t))
 	cfg.Proxy.Port = config.Port(freePort(t))
-	store, err := state.NewSQLiteStore(dir)
+	store, err := store.NewSQLiteStore(dir)
 	if err != nil {
 		t.Fatal(err)
 	}

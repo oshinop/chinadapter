@@ -28,6 +28,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/quickfox"
 	"github.com/kfadapter/kfadapter/internal/socks"
 	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 	"github.com/kfadapter/kfadapter/internal/web"
 )
@@ -125,7 +126,7 @@ func validateState(arguments []string) error {
 	if err := flags.Parse(arguments); err != nil || flags.NArg() != 0 || strings.TrimSpace(*path) == "" {
 		return errors.New("invalid validate-state arguments")
 	}
-	return state.ValidateSQLiteFile(context.Background(), *path)
+	return store.ValidateSQLiteFile(context.Background(), *path)
 }
 
 func healthcheck(arguments []string) error {
@@ -175,7 +176,7 @@ func serve(arguments []string) error {
 type adapter struct {
 	runtime            *app.Runtime
 	manager            *state.Manager
-	store              *state.SQLiteStore
+	store              *store.SQLiteStore
 	httpServer         *http.Server
 	httpListener       net.Listener
 	socksServer        *socks.Server
@@ -193,7 +194,7 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	if err := validateListenInterface(cfg.ListenAddr); err != nil {
 		return nil, err
 	}
-	store, err := state.NewSQLiteStore(stateDirectory)
+	store, err := store.NewSQLiteStore(stateDirectory)
 	if err != nil {
 		return nil, err
 	}

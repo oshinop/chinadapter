@@ -1,4 +1,4 @@
-package state
+package store
 
 var sqliteSchemaV8Tables = map[string]int{
 	"schema_version": 0, "state_metadata": 1, "access_token_verifier": 2,

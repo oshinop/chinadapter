@@ -9,6 +9,7 @@ import (
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
+	storepkg "github.com/kfadapter/kfadapter/internal/store"
 	"github.com/kfadapter/kfadapter/internal/subscription"
 )
 
@@ -18,7 +19,7 @@ func TestQuickFoxSnapshotSurvivesSQLiteRestart(t *testing.T) {
 	if err := os.Chmod(directory, 0700); err != nil {
 		t.Fatal(err)
 	}
-	store, err := state.NewSQLiteStore(directory)
+	store, err := storepkg.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -72,7 +73,7 @@ func TestQuickFoxSnapshotSurvivesSQLiteRestart(t *testing.T) {
 	if err := store.Close(t.Context()); err != nil {
 		t.Fatal(err)
 	}
-	reopened, err := state.NewSQLiteStore(directory)
+	reopened, err := storepkg.NewSQLiteStore(directory)
 	if err != nil {
 		t.Fatal(err)
 	}

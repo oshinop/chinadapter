@@ -1,4 +1,4 @@
-package state
+package store
 
 import (
 	"context"
@@ -10,6 +10,8 @@ import (
 	"strings"
 	"syscall"
 	"time"
+
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
 // ValidateStateDir requires a real, current-user-owned 0700 directory.
@@ -19,7 +21,7 @@ func ValidateStateDir(dir string) error {
 		return fmt.Errorf("state directory %q: %w", dir, err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.IsDir() || info.Mode().Perm() != 0o700 {
-		return fmt.Errorf("state directory %q: %w", dir, ErrInsecureStatePath)
+		return fmt.Errorf("state directory %q: %w", dir, domain.ErrInsecureStatePath)
 	}
 	if err := ownedByCurrentUser(info); err != nil {
 		return fmt.Errorf("state directory %q: %w", dir, err)
@@ -30,7 +32,7 @@ func ValidateStateDir(dir string) error {
 func ownedByCurrentUser(info os.FileInfo) error {
 	stat, ok := info.Sys().(*syscall.Stat_t)
 	if !ok || int(stat.Uid) != os.Geteuid() {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	return nil
 }
@@ -42,7 +44,7 @@ func hasSingleLink(info os.FileInfo) bool {
 
 func (s *SQLiteStore) validate() error {
 	if s == nil {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	return ValidateStateDir(s.dir)
 }
@@ -50,9 +52,9 @@ func (s *SQLiteStore) validate() error {
 // ValidateSQLiteFile validates an existing state.db without creating or
 // modifying it. Optional semantic validators inspect the reconstructed
 // aggregate after relational validation succeeds.
-func ValidateSQLiteFile(ctx context.Context, path string, semantic ...func(PersistentState) error) error {
+func ValidateSQLiteFile(ctx context.Context, path string, semantic ...func(domain.PersistentState) error) error {
 	if path == "" {
-		return ErrInsecureStatePath
+		return domain.ErrInsecureStatePath
 	}
 	clean := filepath.Clean(path)
 	if err := ValidateStateDir(filepath.Dir(clean)); err != nil {
@@ -96,7 +98,7 @@ func ValidateSQLiteFile(ctx context.Context, path string, semantic ...func(Persi
 	return corruptDatabase(tx.Commit())
 }
 
-func validatePersistentStateSemantics(state PersistentState, validators []func(PersistentState) error) error {
+func validatePersistentStateSemantics(state domain.PersistentState, validators []func(domain.PersistentState) error) error {
 	for _, validator := range validators {
 		if validator == nil {
 			continue
@@ -114,14 +116,14 @@ func validateEmptyStateDir(dir string) error {
 		return fmt.Errorf("read state directory: %w", err)
 	}
 	if len(entries) != 0 {
-		return fmt.Errorf("state directory contains an unexpected artifact: %w", ErrInsecureStatePath)
+		return fmt.Errorf("state directory contains an unexpected artifact: %w", domain.ErrInsecureStatePath)
 	}
 	return nil
 }
 
 func stateFileExists(path string, maximum int64) (bool, error) {
 	err := validateSecureStateFile(path, maximum)
-	if errors.Is(err, ErrStateNotFound) {
+	if errors.Is(err, domain.ErrStateNotFound) {
 		return false, nil
 	}
 	return err == nil, err
@@ -138,23 +140,23 @@ func validateSecureStateFile(path string, maximum int64) error {
 func openSecureStateFile(path string, maximum int64) (*os.File, error) {
 	info, err := os.Lstat(path)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, ErrStateNotFound
+		return nil, domain.ErrStateNotFound
 	}
 	if err != nil {
 		return nil, fmt.Errorf("stat state file: %w", err)
 	}
 	if info.Mode()&os.ModeSymlink != 0 || !info.Mode().IsRegular() || info.Mode().Perm() != 0o600 || info.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || !hasSingleLink(info) {
-		return nil, ErrInsecureStatePath
+		return nil, domain.ErrInsecureStatePath
 	}
 	if err := ownedByCurrentUser(info); err != nil {
 		return nil, err
 	}
 	file, err := os.OpenFile(path, os.O_RDONLY|syscall.O_NOFOLLOW|syscall.O_NONBLOCK, 0)
 	if errors.Is(err, os.ErrNotExist) {
-		return nil, ErrStateNotFound
+		return nil, domain.ErrStateNotFound
 	}
 	if errors.Is(err, syscall.ELOOP) {
-		return nil, ErrInsecureStatePath
+		return nil, domain.ErrInsecureStatePath
 	}
 	if err != nil {
 		return nil, fmt.Errorf("open state file: %w", err)
@@ -166,7 +168,7 @@ func openSecureStateFile(path string, maximum int64) (*os.File, error) {
 	}
 	if !opened.Mode().IsRegular() || opened.Mode().Perm() != 0o600 || opened.Mode()&(os.ModeSetuid|os.ModeSetgid|os.ModeSticky) != 0 || !hasSingleLink(opened) {
 		_ = file.Close()
-		return nil, ErrInsecureStatePath
+		return nil, domain.ErrInsecureStatePath
 	}
 	if err := ownedByCurrentUser(opened); err != nil {
 		_ = file.Close()
@@ -174,7 +176,7 @@ func openSecureStateFile(path string, maximum int64) (*os.File, error) {
 	}
 	if opened.Size() < 0 || opened.Size() > maximum {
 		_ = file.Close()
-		return nil, fmt.Errorf("%w: state file exceeds maximum size", ErrCorruptState)
+		return nil, fmt.Errorf("%w: state file exceeds maximum size", domain.ErrCorruptState)
 	}
 	return file, nil
 }

@@ -1,4 +1,4 @@
-package state
+package store
 
 import (
 	"context"
@@ -9,10 +9,11 @@ import (
 	"time"
 
 	"github.com/kfadapter/kfadapter/internal/provider"
+	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
-func replacePersistentStateTx(ctx context.Context, tx *sql.Tx, state PersistentState) error {
-	if err := ValidatePersistentState(state); err != nil {
+func replacePersistentStateTx(ctx context.Context, tx *sql.Tx, state domain.PersistentState) error {
+	if err := domain.ValidatePersistentState(state); err != nil {
 		return fmt.Errorf("refusing invalid persistent state: %w", err)
 	}
 	if _, err := tx.ExecContext(ctx, "DELETE FROM state_metadata WHERE id = 1"); err != nil {
@@ -53,7 +54,7 @@ func replacePersistentStateTx(ctx context.Context, tx *sql.Tx, state PersistentS
 	return nil
 }
 
-func insertActiveSessionTx(ctx context.Context, tx *sql.Tx, snapshot *RuntimeSnapshot) error {
+func insertActiveSessionTx(ctx context.Context, tx *sql.Tx, snapshot *domain.RuntimeSnapshot) error {
 	if snapshot == nil {
 		return nil
 	}
@@ -106,10 +107,10 @@ func insertActiveSessionTx(ctx context.Context, tx *sql.Tx, snapshot *RuntimeSna
 	return nil
 }
 
-func loadPersistentStateTx(ctx context.Context, tx *sql.Tx) (PersistentState, error) {
-	var state PersistentState
+func loadPersistentStateTx(ctx context.Context, tx *sql.Tx) (domain.PersistentState, error) {
+	var state domain.PersistentState
 	if err := tx.QueryRowContext(ctx, "SELECT installation_id FROM state_metadata WHERE id = 1").Scan(&state.InstallationID); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	var memory, iterations, parallelism int64
 	var salt, hash []byte
@@ -117,73 +118,72 @@ func loadPersistentStateTx(ctx context.Context, tx *sql.Tx) (PersistentState, er
 	switch {
 	case errors.Is(err, sql.ErrNoRows):
 	case err != nil:
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	default:
 		if memory < 0 || memory > int64(^uint32(0)) || iterations < 0 || iterations > int64(^uint32(0)) || parallelism < 0 || parallelism > int64(^uint8(0)) {
-			return PersistentState{}, corruptDatabase(errors.New("invalid verifier parameters"))
+			return domain.PersistentState{}, corruptDatabase(errors.New("invalid verifier parameters"))
 		}
-		state.AccessTokenVerifier = &AccessTokenVerifier{Parameters: Argon2idParameters{MemoryKiB: uint32(memory), Iterations: uint32(iterations), Parallelism: uint8(parallelism)}, Salt: append([]byte(nil), salt...), Hash: append([]byte(nil), hash...)}
+		state.AccessTokenVerifier = &domain.AccessTokenVerifier{Parameters: domain.Argon2idParameters{MemoryKiB: uint32(memory), Iterations: uint32(iterations), Parallelism: uint8(parallelism)}, Salt: append([]byte(nil), salt...), Hash: append([]byte(nil), hash...)}
 	}
 	var reveal int64
 	if err := tx.QueryRowContext(ctx, "SELECT reveal_endpoints, refresh_policy FROM preferences WHERE id = 1").Scan(&reveal, &state.Preferences.RefreshPolicy); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	value, err := intBool(reveal)
 	if err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	state.Preferences.RevealEndpoints = value
 	state.Preferences.ExcludedNodeIDs = make(map[string]bool)
 	excludedRows, err := tx.QueryContext(ctx, "SELECT node_id FROM excluded_node_ids WHERE preference_id = 1")
 	if err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	defer excludedRows.Close()
 	for excludedRows.Next() {
 		var nodeID string
 		if err := excludedRows.Scan(&nodeID); err != nil {
-			return PersistentState{}, corruptDatabase(err)
+			return domain.PersistentState{}, corruptDatabase(err)
 		}
 		if _, duplicate := state.Preferences.ExcludedNodeIDs[nodeID]; duplicate {
-			return PersistentState{}, corruptDatabase(errors.New("duplicate excluded node id"))
+			return domain.PersistentState{}, corruptDatabase(errors.New("duplicate excluded node id"))
 		}
 		state.Preferences.ExcludedNodeIDs[nodeID] = true
 	}
 	if err := excludedRows.Close(); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	if err := excludedRows.Err(); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	active, err := loadActiveSessionTx(ctx, tx)
 	if err != nil {
-		return PersistentState{}, err
+		return domain.PersistentState{}, err
 	}
 	state.ActiveSession = active
 	if state.ActiveSession != nil {
 		authority, err := state.Identity()
 		if err != nil {
-			return PersistentState{}, corruptDatabase(err)
+			return domain.PersistentState{}, corruptDatabase(err)
 		}
-		state.ActiveSession.Selectors, err = BuildSelectors(state.ActiveSession.Nodes, authority)
+		state.ActiveSession.Selectors, err = domain.BuildSelectors(state.ActiveSession.Nodes, authority)
 		if err != nil {
-			return PersistentState{}, corruptDatabase(err)
+			return domain.PersistentState{}, corruptDatabase(err)
 		}
-		state.ActiveSession.nodeIndex = make(map[string]int, len(state.ActiveSession.Nodes))
+		state.ActiveSession.IndexNodes()
 		for index := range state.ActiveSession.Nodes {
-			state.ActiveSession.nodeIndex[state.ActiveSession.Nodes[index].ID] = index
 			credentials, _ := authority.Credentials(state.ActiveSession.Nodes[index].Route())
 			state.ActiveSession.Nodes[index].Selector = credentials.Username
 		}
 	}
-	if err := ValidatePersistentState(state); err != nil {
-		return PersistentState{}, corruptDatabase(err)
+	if err := domain.ValidatePersistentState(state); err != nil {
+		return domain.PersistentState{}, corruptDatabase(err)
 	}
 	return state, nil
 }
 
-func loadActiveSessionTx(ctx context.Context, tx *sql.Tx) (*RuntimeSnapshot, error) {
-	var snapshot RuntimeSnapshot
+func loadActiveSessionTx(ctx context.Context, tx *sql.Tx) (*domain.RuntimeSnapshot, error) {
+	var snapshot domain.RuntimeSnapshot
 	var created, expires int64
 	err := tx.QueryRowContext(ctx, "SELECT generation, created_at_ns, expires_at_ns FROM active_session WHERE id = 1").Scan(&snapshot.Generation, &created, &expires)
 	if errors.Is(err, sql.ErrNoRows) {
@@ -262,7 +262,7 @@ func loadActiveSessionTx(ctx context.Context, tx *sql.Tx) (*RuntimeSnapshot, err
 	}
 	defer nodeRows.Close()
 	for nodeRows.Next() {
-		var node Node
+		var node domain.Node
 		var rawProvider, rawProtocol string
 		var port, auto, eligible, excluded, rtt int64
 		var probed sql.NullInt64
@@ -284,7 +284,7 @@ func loadActiveSessionTx(ctx context.Context, tx *sql.Tx) (*RuntimeSnapshot, err
 			return nil, corruptDatabase(conversionErr)
 		}
 		node.Provider, node.Protocol = provider.ID(rawProvider), provider.Protocol(rawProtocol)
-		node.Port, node.Health, node.UDPHealth, node.TCPRTT, node.ProbedAt = uint16(port), NodeHealth(health), UDPHealth(udp), time.Duration(rtt), timeFromNullable(probed)
+		node.Port, node.Health, node.UDPHealth, node.TCPRTT, node.ProbedAt = uint16(port), domain.NodeHealth(health), domain.UDPHealth(udp), time.Duration(rtt), timeFromNullable(probed)
 		snapshot.Nodes = append(snapshot.Nodes, node)
 		providerSnapshot, available := snapshot.Providers[node.Provider]
 		if !available {
