@@ -91,12 +91,10 @@ export interface SubscriptionURLResponse {
 export interface AccessStatusResponse {
   initialized: boolean;
   authenticated: boolean;
-  csrfToken?: string;
   expiresAt?: string;
 }
 
 export interface AccessSessionResponse {
-  csrfToken?: string;
   expiresAt?: string;
 }
 

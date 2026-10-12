@@ -360,7 +360,6 @@ describe("access token and browser session", () => {
     expect(api.logoutAccount).toHaveBeenNthCalledWith(2, "quickfox");
     expect(vi.mocked(api.logoutAccount).mock.invocationCallOrder[0]).toBeLessThan(vi.mocked(api.logoutAccount).mock.invocationCallOrder[1]);
     expect(api.lockConsole).not.toHaveBeenCalled();
-    expect(api.clearSession).not.toHaveBeenCalled();
     await waitFor(() => expect(api.status).toHaveBeenCalledTimes(2));
     expect(api.nodes).toHaveBeenCalledTimes(2);
     expect(api.subscriptionURL).toHaveBeenCalledTimes(2);

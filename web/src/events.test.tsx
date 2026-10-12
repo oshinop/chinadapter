@@ -19,7 +19,7 @@ function renderAuthenticatedConsole(pathname = "/") {
   let statusFailure: number | null = null;
   const fetchMock = vi.fn((resource: RequestInfo | URL, init?: RequestInit) => {
     const path = typeof resource === "string" ? resource : resource.toString();
-    if (path.endsWith("/access/status")) return Promise.resolve(response({ initialized: true, authenticated: true, csrfToken: "csrf-test" }));
+    if (path.endsWith("/access/status")) return Promise.resolve(response({ initialized: true, authenticated: true }));
     if (path.endsWith("/status")) {
       if (statusFailure) return Promise.resolve(response({ title: "Session check failed", status: statusFailure, code: "session_check_failed" }, statusFailure));
       return Promise.resolve(response(currentStatus));

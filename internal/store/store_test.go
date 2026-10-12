@@ -88,8 +88,8 @@ func TestV8FixtureMigrationPreservesProvidersAndSessions(t *testing.T) {
 		t.Fatal("raw browser session token not hashed")
 	}
 	restored := false
-	if err := store.RestoreBrowserSessions(t.Context(), time.Unix(0, expires).Add(-time.Hour), 4096, func(hash []byte, csrf string, _ time.Time) error {
-		restored = bytes.Equal(hash, expectedHash[:]) && csrf == "AgICAgICAgICAgICAgICAgICAgICAgICAgICAgICAgI"
+	if err := store.RestoreBrowserSessions(t.Context(), time.Unix(0, expires).Add(-time.Hour), 4096, func(hash []byte, _ time.Time) error {
+		restored = bytes.Equal(hash, expectedHash[:])
 		return nil
 	}); err != nil {
 		t.Fatal(err)
@@ -213,15 +213,14 @@ func newClockedStore(t *testing.T) (*SQLiteStore, time.Time) {
 func TestBrowserSessionEvictionKeepsNewestExpiry(t *testing.T) {
 	store, now := newClockedStore(t)
 	tokens := make([]string, 3)
-	csrf := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{7}, 32))
 	for index := range tokens {
 		tokens[index] = base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{byte(index + 1)}, 32))
-		if err := store.SaveBrowserSession(t.Context(), tokens[index], csrf, now.Add(time.Duration(index+1)*time.Hour), 4096); err != nil {
+		if err := store.SaveBrowserSession(t.Context(), tokens[index], now.Add(time.Duration(index+1)*time.Hour), 4096); err != nil {
 			t.Fatal(err)
 		}
 	}
 	restored := make(map[string]bool)
-	if err := store.RestoreBrowserSessions(t.Context(), now, 2, func(hash []byte, _ string, _ time.Time) error { restored[string(hash)] = true; return nil }); err != nil {
+	if err := store.RestoreBrowserSessions(t.Context(), now, 2, func(hash []byte, _ time.Time) error { restored[string(hash)] = true; return nil }); err != nil {
 		t.Fatal(err)
 	}
 	oldest := BrowserSessionTokenHash(tokens[0])
@@ -236,6 +235,39 @@ func TestBrowserSessionEvictionKeepsNewestExpiry(t *testing.T) {
 	}
 }
 
+func TestBrowserSessionPersistenceIgnoresLegacyCSRFColumn(t *testing.T) {
+	store, now := newClockedStore(t)
+	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
+	expiresAt := now.Add(time.Hour)
+	if err := store.SaveBrowserSession(t.Context(), token, expiresAt, 4096); err != nil {
+		t.Fatal(err)
+	}
+	var legacyValue string
+	if err := store.db.QueryRowContext(t.Context(), "SELECT csrf FROM browser_sessions").Scan(&legacyValue); err != nil {
+		t.Fatal(err)
+	}
+	if legacyValue != "" {
+		t.Fatal("new session persisted unused legacy material")
+	}
+	if _, err := store.db.ExecContext(t.Context(), "UPDATE browser_sessions SET csrf = 'unused legacy value'"); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := store.Load(t.Context()); err != nil {
+		t.Fatalf("legacy column prevented state validation: %v", err)
+	}
+	expectedHash := BrowserSessionTokenHash(token)
+	restored := false
+	if err := store.RestoreBrowserSessions(t.Context(), now, 4096, func(hash []byte, expires time.Time) error {
+		restored = bytes.Equal(hash, expectedHash[:]) && expires.Equal(expiresAt)
+		return nil
+	}); err != nil {
+		t.Fatal(err)
+	}
+	if !restored {
+		t.Fatal("legacy column prevented session restoration")
+	}
+}
+
 func TestVerifierChangeRevokesDurableSessionsAtomically(t *testing.T) {
 	store, now := newClockedStore(t)
 	if _, err := store.Update(t.Context(), func(candidate *domain.PersistentState) error {
@@ -244,8 +276,7 @@ func TestVerifierChangeRevokesDurableSessionsAtomically(t *testing.T) {
 		t.Fatal(err)
 	}
 	token := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{1}, 32))
-	csrf := base64.RawURLEncoding.EncodeToString(bytes.Repeat([]byte{2}, 32))
-	if err := store.SaveBrowserSession(t.Context(), token, csrf, now.Add(time.Hour), 4096); err != nil {
+	if err := store.SaveBrowserSession(t.Context(), token, now.Add(time.Hour), 4096); err != nil {
 		t.Fatal(err)
 	}
 	original, err := store.Load(t.Context())

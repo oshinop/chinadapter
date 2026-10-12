@@ -12,8 +12,8 @@ import (
 	domain "github.com/kfadapter/kfadapter/internal/state"
 )
 
-// RestoreBrowserSessions restores hashed cookie identities and CSRF values.
-func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time, max int, add func(tokenHash []byte, csrf string, expiresAt time.Time) error) error {
+// RestoreBrowserSessions restores hashed cookie identities and expiry.
+func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time, max int, add func(tokenHash []byte, expiresAt time.Time) error) error {
 	if s == nil || add == nil || !validBrowserSessionLimit(max) {
 		return domain.ErrInsecureStatePath
 	}
@@ -31,23 +31,22 @@ func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time,
 	if err := pruneBrowserSessionsTx(ctx, tx, now, max); err != nil {
 		return err
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT token_hash, csrf, expires_at_ns FROM browser_sessions ORDER BY expires_at_ns DESC, token_hash")
+	rows, err := tx.QueryContext(ctx, "SELECT token_hash, expires_at_ns FROM browser_sessions ORDER BY expires_at_ns DESC, token_hash")
 	if err != nil {
 		return corruptDatabase(err)
 	}
 	defer rows.Close()
 	for rows.Next() {
 		var tokenHash []byte
-		var csrf string
 		var expires int64
-		if err := rows.Scan(&tokenHash, &csrf, &expires); err != nil {
+		if err := rows.Scan(&tokenHash, &expires); err != nil {
 			return corruptDatabase(err)
 		}
 		expiresAt := time.Unix(0, expires).UTC()
-		if !validHashedBrowserSession(tokenHash, csrf, expiresAt, now) {
+		if !validHashedBrowserSession(tokenHash, expiresAt, now) {
 			return corruptDatabase(errors.New("malformed browser session"))
 		}
-		if err := add(tokenHash, csrf, expiresAt); err != nil {
+		if err := add(tokenHash, expiresAt); err != nil {
 			return err
 		}
 	}
@@ -60,15 +59,15 @@ func (s *SQLiteStore) RestoreBrowserSessions(ctx context.Context, now time.Time,
 	return corruptDatabase(tx.Commit())
 }
 
-// SaveBrowserSession persists one unexpired opaque cookie/CSRF pair, pruning
+// SaveBrowserSession persists one unexpired opaque cookie identity, pruning
 // expired sessions and respecting the caller's configured maximum.
-func (s *SQLiteStore) SaveBrowserSession(ctx context.Context, token, csrf string, expiresAt time.Time, max int) error {
+func (s *SQLiteStore) SaveBrowserSession(ctx context.Context, token string, expiresAt time.Time, max int) error {
 	if s == nil || !validBrowserSessionLimit(max) {
 		return domain.ErrInsecureStatePath
 	}
 	now := s.now().UTC()
 	expiresAt = expiresAt.UTC()
-	if !validBrowserSession(token, csrf, expiresAt, now) {
+	if !validBrowserSession(token, expiresAt, now) {
 		return domain.ErrCorruptState
 	}
 	hash := BrowserSessionTokenHash(token)
@@ -98,7 +97,8 @@ func (s *SQLiteStore) SaveBrowserSession(ctx context.Context, token, csrf string
 			return fmt.Errorf("browser session limit reached")
 		}
 	}
-	if _, err := tx.ExecContext(ctx, "INSERT INTO browser_sessions (token_hash, csrf, expires_at_ns) VALUES (?, ?, ?) ON CONFLICT(token_hash) DO UPDATE SET csrf = excluded.csrf, expires_at_ns = excluded.expires_at_ns", hash[:], csrf, nanos(expiresAt)); err != nil {
+	// Retain the unused legacy column to preserve the schema without a migration.
+	if _, err := tx.ExecContext(ctx, "INSERT INTO browser_sessions (token_hash, csrf, expires_at_ns) VALUES (?, '', ?) ON CONFLICT(token_hash) DO UPDATE SET csrf = '', expires_at_ns = excluded.expires_at_ns", hash[:], nanos(expiresAt)); err != nil {
 		return corruptDatabase(err)
 	}
 	return corruptDatabase(tx.Commit())
@@ -140,8 +140,8 @@ func BrowserSessionTokenHash(token string) [sha256.Size]byte {
 	return sha256.Sum256([]byte(token))
 }
 
-func validHashedBrowserSession(hash []byte, csrf string, expiresAt, now time.Time) bool {
-	return len(hash) == sha256.Size && validOpaqueBrowserToken(csrf) && !expiresAt.IsZero() && expiresAt.After(now) && !expiresAt.After(now.Add(maxSessionLifetime))
+func validHashedBrowserSession(hash []byte, expiresAt, now time.Time) bool {
+	return len(hash) == sha256.Size && !expiresAt.IsZero() && expiresAt.After(now) && !expiresAt.After(now.Add(maxSessionLifetime))
 }
 
 func validateBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, max int, prune bool) error {
@@ -150,7 +150,7 @@ func validateBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, m
 			return err
 		}
 	}
-	rows, err := tx.QueryContext(ctx, "SELECT token_hash, csrf, expires_at_ns FROM browser_sessions")
+	rows, err := tx.QueryContext(ctx, "SELECT token_hash, expires_at_ns FROM browser_sessions")
 	if err != nil {
 		return corruptDatabase(err)
 	}
@@ -158,9 +158,8 @@ func validateBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, m
 	count := 0
 	for rows.Next() {
 		var tokenHash []byte
-		var csrf string
 		var expires int64
-		if err := rows.Scan(&tokenHash, &csrf, &expires); err != nil {
+		if err := rows.Scan(&tokenHash, &expires); err != nil {
 			return corruptDatabase(err)
 		}
 		expiresAt := time.Unix(0, expires).UTC()
@@ -170,7 +169,7 @@ func validateBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, m
 			}
 			continue
 		}
-		if !validHashedBrowserSession(tokenHash, csrf, expiresAt, now) {
+		if !validHashedBrowserSession(tokenHash, expiresAt, now) {
 			return corruptDatabase(errors.New("malformed browser session"))
 		}
 		count++
@@ -200,8 +199,8 @@ func pruneBrowserSessionsTx(ctx context.Context, tx *sql.Tx, now time.Time, max 
 
 func validBrowserSessionLimit(max int) bool { return max > 0 && max <= maxBrowserSessions }
 
-func validBrowserSession(token, csrf string, expiresAt, now time.Time) bool {
-	return validOpaqueBrowserToken(token) && validOpaqueBrowserToken(csrf) && !expiresAt.IsZero() && expiresAt.After(now) && !expiresAt.After(now.Add(maxSessionLifetime))
+func validBrowserSession(token string, expiresAt, now time.Time) bool {
+	return validOpaqueBrowserToken(token) && !expiresAt.IsZero() && expiresAt.After(now) && !expiresAt.After(now.Add(maxSessionLifetime))
 }
 
 func validOpaqueBrowserToken(value string) bool {

@@ -6,30 +6,32 @@ import (
 	"testing"
 )
 
-func TestAccessTokenChangeRequiresSessionCSRFAndOrigin(t *testing.T) {
+func TestAccessTokenChangeRequiresSessionAndSameOrigin(t *testing.T) {
 	backend := &fakeBackend{}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 	body := `{"current":"` + validTestToken + `","next":"replacement-token-12345"}`
 	for _, test := range []struct {
-		name         string
-		cookie       bool
-		origin, csrf string
-		want         int
+		name              string
+		cookie            bool
+		origin, fetchSite string
+		want              int
 	}{
-		{name: "session", origin: testOrigin, csrf: csrf, want: http.StatusUnauthorized},
-		{name: "csrf", cookie: true, origin: testOrigin, want: http.StatusForbidden},
-		{name: "origin", cookie: true, csrf: csrf, want: http.StatusForbidden},
-		{name: "cross-origin", cookie: true, origin: "http://evil.test", csrf: csrf, want: http.StatusForbidden},
+		{name: "session", origin: testOrigin, want: http.StatusUnauthorized},
+		{name: "cross-site", cookie: true, origin: testOrigin, fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "cross-origin", cookie: true, origin: "http://evil.test", want: http.StatusForbidden},
 	} {
 		t.Run(test.name, func(t *testing.T) {
 			var sessionCookie *http.Cookie
 			if test.cookie {
 				sessionCookie = cookie
 			}
-			response := rawRequest(api, http.MethodPost, "/api/v1/access/token", body, sessionCookie, test.origin, test.csrf)
+			response := rawRequest(api, http.MethodPost, "/api/v1/access/token", body, sessionCookie, test.origin, test.fetchSite)
 			if response.Code != test.want {
 				t.Fatalf("mutation security = %d", response.Code)
+			}
+			if test.want == http.StatusForbidden && !strings.Contains(response.Body.String(), `"code":"invalid_origin"`) {
+				t.Fatalf("cross-origin problem = %s", response.Body.String())
 			}
 		})
 	}
@@ -40,22 +42,22 @@ func TestAccessTokenChangeRequiresSessionCSRFAndOrigin(t *testing.T) {
 
 func TestAccessTokenChangeThrottlesOnlyCurrentFailures(t *testing.T) {
 	api := newTestAPI(t, &fakeBackend{}, newFakeSubscriptions())
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 	invalidNext := `{"current":"` + validTestToken + `","next":"short"}`
 	for range 5 {
-		response := requestWithCSRF(api, http.MethodPost, "/api/v1/access/token", invalidNext, cookie, csrf)
+		response := request(api, http.MethodPost, "/api/v1/access/token", invalidNext, cookie, testOrigin)
 		if response.Code != http.StatusBadRequest || !strings.Contains(response.Body.String(), "invalid_next_access_token") {
 			t.Fatalf("invalid next = %d", response.Code)
 		}
 	}
 	wrongCurrent := `{"current":"` + invalidTestToken + `","next":"replacement-token-12345"}`
 	for range 5 {
-		response := requestWithCSRF(api, http.MethodPost, "/api/v1/access/token", wrongCurrent, cookie, csrf)
+		response := request(api, http.MethodPost, "/api/v1/access/token", wrongCurrent, cookie, testOrigin)
 		if response.Code != http.StatusUnauthorized {
 			t.Fatalf("wrong current = %d", response.Code)
 		}
 	}
-	limited := requestWithCSRF(api, http.MethodPost, "/api/v1/access/token", wrongCurrent, cookie, csrf)
+	limited := request(api, http.MethodPost, "/api/v1/access/token", wrongCurrent, cookie, testOrigin)
 	if limited.Code != http.StatusTooManyRequests || limited.Header().Get("Retry-After") == "" {
 		t.Fatalf("token change throttle = %d", limited.Code)
 	}
@@ -64,16 +66,16 @@ func TestAccessTokenChangeThrottlesOnlyCurrentFailures(t *testing.T) {
 func TestAccessTokenChangeRevokesSessionsAndEventLifetime(t *testing.T) {
 	persistence := &fakeBrowserSessionPersistence{}
 	api := newPersistentTestAPI(t, testConfig().Now, &fakeBackend{}, persistence)
-	caller, csrf := establish(t, api)
+	caller := establish(t, api)
 	session, exists := api.sessions.valid(t.Context(), caller.Value)
 	if !exists {
 		t.Fatal("caller session missing")
 	}
 	other := request(api, http.MethodPost, "/api/v1/access/login", `{"token":"`+validTestToken+`"}`, nil, testOrigin)
-	otherCookie, _ := sessionFromResponse(t, other)
-	changed := requestWithCSRF(api, http.MethodPost, "/api/v1/access/token", `{"current":"`+validTestToken+`","next":"replacement-token-12345"}`, caller, csrf)
-	replacement, newCSRF := sessionFromResponse(t, changed)
-	if changed.Code != http.StatusOK || newCSRF == csrf || replacement.Value == caller.Value {
+	otherCookie := sessionFromResponse(t, other)
+	changed := request(api, http.MethodPost, "/api/v1/access/token", `{"current":"`+validTestToken+`","next":"replacement-token-12345"}`, caller, testOrigin)
+	replacement := sessionFromResponse(t, changed)
+	if changed.Code != http.StatusOK || replacement.Value == caller.Value {
 		t.Fatal("caller session was not replaced")
 	}
 	select {

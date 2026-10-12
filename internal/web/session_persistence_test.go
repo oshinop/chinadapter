@@ -2,7 +2,6 @@ package web
 
 import (
 	"context"
-	"encoding/json"
 	"errors"
 	"net/http"
 	"strings"
@@ -12,7 +11,6 @@ import (
 )
 
 type persistedBrowserSession struct {
-	csrf      string
 	expiresAt time.Time
 }
 
@@ -27,7 +25,7 @@ type fakeBrowserSessionPersistence struct {
 	deleteCalls  int
 }
 
-func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(_ context.Context, now time.Time, max int, add func(tokenHash []byte, csrf string, expiresAt time.Time) error) error {
+func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(_ context.Context, now time.Time, max int, add func(tokenHash []byte, expiresAt time.Time) error) error {
 	p.mu.Lock()
 	p.restoreCalls++
 	if p.restoreErr != nil {
@@ -50,7 +48,7 @@ func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(_ context.Context
 		if count >= max {
 			break
 		}
-		if err := add([]byte(token), session.csrf, session.expiresAt); err != nil {
+		if err := add([]byte(token), session.expiresAt); err != nil {
 			return err
 		}
 		count++
@@ -58,7 +56,7 @@ func (p *fakeBrowserSessionPersistence) RestoreBrowserSessions(_ context.Context
 	return nil
 }
 
-func (p *fakeBrowserSessionPersistence) SaveBrowserSession(_ context.Context, token, csrf string, expiresAt time.Time, _ int) error {
+func (p *fakeBrowserSessionPersistence) SaveBrowserSession(_ context.Context, token string, expiresAt time.Time, _ int) error {
 	p.mu.Lock()
 	defer p.mu.Unlock()
 	p.saveCalls++
@@ -68,7 +66,7 @@ func (p *fakeBrowserSessionPersistence) SaveBrowserSession(_ context.Context, to
 	if p.sessions == nil {
 		p.sessions = make(map[string]persistedBrowserSession)
 	}
-	p.sessions[sessionKey(token)] = persistedBrowserSession{csrf: csrf, expiresAt: expiresAt}
+	p.sessions[sessionKey(token)] = persistedBrowserSession{expiresAt: expiresAt}
 	return nil
 }
 
@@ -116,19 +114,14 @@ func TestBrowserSessionPersistsAcrossAPIRecreationUntilExpiry(t *testing.T) {
 	clock := func() time.Time { return now }
 
 	api := newPersistentTestAPI(t, clock, backend, persistence)
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 	api = newPersistentTestAPI(t, clock, backend, persistence)
 
 	restored := request(api, http.MethodGet, "/api/v1/access/status", "", cookie, "")
-	assertAccessStatus(t, restored, true, true, true)
-	var response struct {
-		CSRFToken string `json:"csrfToken"`
-	}
-	if err := json.NewDecoder(restored.Body).Decode(&response); err != nil {
-		t.Fatal(err)
-	}
-	if response.CSRFToken != csrf {
-		t.Fatalf("restored csrf = %q, want original csrf", response.CSRFToken)
+	assertAccessStatus(t, restored, true, true)
+	mutation := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, "")
+	if mutation.Code != http.StatusAccepted {
+		t.Fatalf("restored session mutation = %d: %s", mutation.Code, mutation.Body.String())
 	}
 
 	now = now.Add(2 * time.Hour)
@@ -144,9 +137,9 @@ func TestBrowserSessionLockRevokesDurablyAcrossAPIRecreation(t *testing.T) {
 	backend := &fakeBackend{}
 	clock := func() time.Time { return now }
 	api := newPersistentTestAPI(t, clock, backend, persistence)
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 
-	locked := requestWithCSRF(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, csrf)
+	locked := request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
 	if locked.Code != http.StatusNoContent || !strings.Contains(locked.Header().Get("Set-Cookie"), "Max-Age=0") {
 		t.Fatalf("access lock = %d %#v", locked.Code, locked.Header())
 	}
@@ -174,7 +167,7 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 	t.Run("corrupt restored row prevents startup", func(t *testing.T) {
 		now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
 		persistence := &fakeBrowserSessionPersistence{sessions: map[string]persistedBrowserSession{
-			"corrupt": {csrf: "corrupt", expiresAt: now.Add(time.Hour)},
+			"corrupt": {expiresAt: now.Add(time.Hour)},
 		}}
 		config := testConfig()
 		config.Now = func() time.Time { return now }
@@ -188,7 +181,7 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 		now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
 		secret := strings.Repeat("A", 43)
 		persistence := &fakeBrowserSessionPersistence{sessions: map[string]persistedBrowserSession{
-			sessionKey(secret): {csrf: secret, expiresAt: now.Add(2 * time.Hour)},
+			sessionKey(secret): {expiresAt: now.Add(2 * time.Hour)},
 		}}
 		config := testConfig()
 		config.Now = func() time.Time { return now }
@@ -221,12 +214,12 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 		backend := &fakeBackend{}
 		clock := func() time.Time { return now }
 		api := newPersistentTestAPI(t, clock, backend, persistence)
-		cookie, csrf := establish(t, api)
+		cookie := establish(t, api)
 		persistence.mu.Lock()
 		persistence.deleteErr = errors.New("delete failed")
 		persistence.mu.Unlock()
 
-		locked := requestWithCSRF(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, csrf)
+		locked := request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
 		if locked.Code != http.StatusServiceUnavailable || locked.Header().Get("Cache-Control") != "no-store" || locked.Header().Get("Set-Cookie") != "" {
 			t.Fatalf("session delete failure = %d %#v", locked.Code, locked.Header())
 		}
@@ -246,11 +239,11 @@ func TestBrowserSessionPersistenceIsOptional(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 	if response := request(api, http.MethodGet, "/api/v1/status", "", cookie, ""); response.Code != http.StatusOK {
 		t.Fatalf("nil persistence authenticated status = %d", response.Code)
 	}
-	locked := requestWithCSRF(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, csrf)
+	locked := request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
 	if locked.Code != http.StatusNoContent {
 		t.Fatalf("nil persistence access lock = %d", locked.Code)
 	}

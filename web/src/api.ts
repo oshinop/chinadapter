@@ -94,40 +94,21 @@ function parseNamedEvent(type: "state" | "refresh" | "probe", data: string): Eve
 }
 
 export class ApiClient {
-  private csrfToken = "";
-
-  setCsrfToken(token: string): void {
-    this.csrfToken = token;
-  }
-
-  clearSession(): void {
-    this.csrfToken = "";
-  }
-
   async accessStatus(): Promise<AccessStatusResponse> {
-    const status = await this.request<AccessStatusResponse>("/access/status");
-    if (status.authenticated) this.setCsrfToken(status.csrfToken || "");
-    else this.clearSession();
-    return status;
+    return this.request<AccessStatusResponse>("/access/status");
   }
 
   async setupAccess(token: string): Promise<AccessSessionResponse> {
-    const session = await this.request<AccessSessionResponse>("/access/setup", { method: "POST", body: { token }, useCSRF: false });
-    this.setCsrfToken(session.csrfToken || "");
-    return session;
+    return this.request<AccessSessionResponse>("/access/setup", { method: "POST", body: { token } });
   }
 
   async loginAccess(token: string): Promise<AccessSessionResponse> {
-    const session = await this.request<AccessSessionResponse>("/access/login", { method: "POST", body: { token }, useCSRF: false });
-    this.setCsrfToken(session.csrfToken || "");
-    return session;
+    return this.request<AccessSessionResponse>("/access/login", { method: "POST", body: { token } });
   }
 
   async changeAccessToken(current: string, next: string): Promise<AccessSessionResponse> {
     const body: AccessTokenChangeInput = { current, next };
-    const session = await this.request<AccessSessionResponse>("/access/token", { method: "POST", body });
-    this.setCsrfToken(session.csrfToken || "");
-    return session;
+    return this.request<AccessSessionResponse>("/access/token", { method: "POST", body });
   }
   async status(): Promise<StatusResponse> {
     return this.request<StatusResponse>("/status");
@@ -171,13 +152,9 @@ export class ApiClient {
     try {
       await this.request<void>("/access/logout", { method: "POST", body: {}, expectEmptyResponse: true });
     } catch (error) {
-      if (error instanceof ApiError) {
-        this.clearSession();
-        if (error.problem.status === 401) return;
-      }
+      if (error instanceof ApiError && error.problem.status === 401) return;
       throw error;
     }
-    this.clearSession();
   }
 
   async refresh(provider: string): Promise<void> {
@@ -219,7 +196,7 @@ export class ApiClient {
 
   private async request<T>(
     path: string,
-    init: { method?: "POST" | "PUT" | "DELETE"; body?: unknown; useCSRF?: boolean; expectEmptyResponse?: boolean } = {},
+    init: { method?: "POST" | "PUT" | "DELETE"; body?: unknown; expectEmptyResponse?: boolean } = {},
   ): Promise<T> {
     const isWrite = Boolean(init.method);
     const response = await fetch(`${API_ROOT}${path}`, {
@@ -231,7 +208,6 @@ export class ApiClient {
         ...(isWrite
           ? {
               "Content-Type": "application/json",
-              ...(init.useCSRF === false ? {} : { "X-CSRF-Token": this.csrfToken }),
             }
           : {}),
       },

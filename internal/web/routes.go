@@ -40,8 +40,17 @@ func (a *API) routes() []apiRoute {
 
 func (a *API) newHandler() http.Handler {
 	mux := http.NewServeMux()
+	protection := http.NewCrossOriginProtection()
+	protection.SetDenyHandler(http.HandlerFunc(func(w http.ResponseWriter, _ *http.Request) {
+		setNoStore(w.Header())
+		a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin")
+	}))
 	for _, route := range a.routes() {
-		mux.Handle(route.method+" "+route.path, a.browserBoundary(route))
+		handler := a.browserBoundary(route)
+		if route.method == http.MethodPost {
+			handler = protection.Handler(handler)
+		}
+		mux.Handle(route.method+" "+route.path, handler)
 		allow := route.method
 		if route.method == http.MethodGet {
 			allow = "GET, HEAD"

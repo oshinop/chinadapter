@@ -20,12 +20,10 @@ func (a *API) accessStatus(w http.ResponseWriter, r *http.Request) {
 	response := struct {
 		Initialized   bool       `json:"initialized"`
 		Authenticated bool       `json:"authenticated"`
-		CSRFToken     string     `json:"csrfToken,omitempty"`
 		ExpiresAt     *time.Time `json:"expiresAt,omitempty"`
 	}{Initialized: status.Initialized}
 	if _, session, authenticated := a.authenticate(r); authenticated {
 		response.Authenticated = true
-		response.CSRFToken = session.csrf
 		expiresAt := session.expiresAt
 		response.ExpiresAt = &expiresAt
 	}
@@ -35,10 +33,6 @@ func (a *API) accessStatus(w http.ResponseWriter, r *http.Request) {
 func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 	if a.backend == nil {
 		a.backendUnavailable(w)
-		return
-	}
-	if !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
-		a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin")
 		return
 	}
 	var body struct {
@@ -97,9 +91,8 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 	a.writeJSON(w, status, struct {
 		Initialized   bool      `json:"initialized"`
 		Authenticated bool      `json:"authenticated"`
-		CSRFToken     string    `json:"csrfToken"`
 		ExpiresAt     time.Time `json:"expiresAt"`
-	}{Initialized: true, Authenticated: true, CSRFToken: session.csrf, ExpiresAt: session.expiresAt})
+	}{Initialized: true, Authenticated: true, ExpiresAt: session.expiresAt})
 }
 
 func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token string, session browserSession) {
@@ -163,9 +156,8 @@ func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token st
 	a.writeJSON(w, http.StatusOK, struct {
 		Initialized   bool      `json:"initialized"`
 		Authenticated bool      `json:"authenticated"`
-		CSRFToken     string    `json:"csrfToken"`
 		ExpiresAt     time.Time `json:"expiresAt"`
-	}{Initialized: true, Authenticated: true, CSRFToken: newSession.csrf, ExpiresAt: newSession.expiresAt})
+	}{Initialized: true, Authenticated: true, ExpiresAt: newSession.expiresAt})
 }
 
 func (a *API) lock(w http.ResponseWriter, r *http.Request, token string) {

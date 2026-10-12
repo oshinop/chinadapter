@@ -60,7 +60,7 @@ describe("API response contracts", () => {
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "GET", credentials: "same-origin", cache: "no-store" });
   });
 
-  it("keeps account logout separate from the console lock and clears CSRF only after locking", async () => {
+  it("keeps account logout separate from the console lock", async () => {
     const fetchMock = vi.fn()
       .mockResolvedValueOnce(new Response(null, { status: 204 }))
       .mockResolvedValueOnce(new Response(null, { status: 202 }))
@@ -68,7 +68,6 @@ describe("API response contracts", () => {
       .mockResolvedValueOnce(new Response(null, { status: 202 }));
     vi.stubGlobal("fetch", fetchMock);
     const api = new ApiClient();
-    api.setCsrfToken("csrf-before-logout");
 
 		await expect(api.logoutAccount("kuaifan")).resolves.toBeUndefined();
 		await api.refresh("kuaifan");
@@ -78,12 +77,12 @@ describe("API response contracts", () => {
     expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/auth/logout");
     expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
 		expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider: "kuaifan" });
-    expect(fetchMock.mock.calls[1][1].headers["X-CSRF-Token"]).toBe("csrf-before-logout");
+    expect(fetchMock.mock.calls[1][1].headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
 		expect(JSON.parse(fetchMock.mock.calls[1][1].body)).toEqual({ provider: "kuaifan" });
     expect(fetchMock.mock.calls[2][0]).toBe("/api/v1/access/logout");
     expect(fetchMock.mock.calls[2][1].method).toBe("POST");
     expect(JSON.parse(fetchMock.mock.calls[2][1].body)).toEqual({});
-    expect(fetchMock.mock.calls[3][1].headers["X-CSRF-Token"]).toBe("");
+    expect(fetchMock.mock.calls[3][1].headers).toEqual({ Accept: "application/json", "Content-Type": "application/json" });
   });
 
   it("accepts the empty 202 refresh acknowledgement", async () => {

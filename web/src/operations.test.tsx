@@ -93,7 +93,7 @@ describe("node inventory", () => {
     expect(await screen.findByRole("heading", { name: "Unlock console" })).toBeTruthy();
     sessionDetails.resolve(chengduDetails);
     await waitFor(() => expect(screen.queryByText("SOCKS password", { exact: true })).toBeNull());
-    expect(api.clearSession).toHaveBeenCalled();
+    expect(api.lockConsole).toHaveBeenCalled();
   });
 
   it("marks a timed-out TCP reachability check without raising an alert", async () => {

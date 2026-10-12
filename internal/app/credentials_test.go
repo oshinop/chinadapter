@@ -1,6 +1,7 @@
 package app
 
 import (
+	"bytes"
 	"context"
 	"encoding/base64"
 	"encoding/json"
@@ -140,7 +141,7 @@ func newStableHarness(t *testing.T, directory string) *stableHarness {
 	})
 	return harness
 }
-func stableRequest(api *web.API, method, path, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
+func stableRequest(api *web.API, method, path, body string, cookie *http.Cookie) *httptest.ResponseRecorder {
 	request := httptest.NewRequest(method, "http://127.0.0.1:10809"+path, strings.NewReader(body))
 	if cookie != nil {
 		request.AddCookie(cookie)
@@ -148,28 +149,31 @@ func stableRequest(api *web.API, method, path, body string, cookie *http.Cookie,
 	if method == http.MethodPost {
 		request.Header.Set("Content-Type", "application/json")
 		request.Header.Set("Origin", "http://127.0.0.1:10809")
-		request.Header.Set("X-CSRF-Token", csrf)
 	}
 	response := httptest.NewRecorder()
 	api.ServeHTTP(response, request)
 	return response
 }
-func stableSession(t *testing.T, response *httptest.ResponseRecorder) (*http.Cookie, string) {
+func stableSession(t *testing.T, response *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	if response.Code != http.StatusOK {
 		t.Fatalf("access status = %d", response.Code)
 	}
 	var body struct {
-		CSRFToken string `json:"csrfToken"`
+		Initialized   bool      `json:"initialized"`
+		Authenticated bool      `json:"authenticated"`
+		ExpiresAt     time.Time `json:"expiresAt"`
 	}
-	if err := json.Unmarshal(response.Body.Bytes(), &body); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(response.Body.Bytes()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		t.Fatal(err)
 	}
 	cookies := response.Result().Cookies()
-	if len(cookies) != 1 || body.CSRFToken == "" {
+	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode || !body.Initialized || !body.Authenticated || body.ExpiresAt.IsZero() {
 		t.Fatal("replacement session missing")
 	}
-	return cookies[0], body.CSRFToken
+	return cookies[0]
 }
 func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]credentialspkg.Credentials) {
 	t.Helper()
@@ -181,7 +185,7 @@ func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]cre
 	if err != nil {
 		t.Fatal(err)
 	}
-	response := stableRequest(harness.api, http.MethodGet, parsed.Path, "", nil, "")
+	response := stableRequest(harness.api, http.MethodGet, parsed.Path, "", nil)
 	if response.Code != http.StatusOK {
 		t.Fatalf("subscription status = %d", response.Code)
 	}
@@ -330,20 +334,20 @@ func TestAccessTokenChangeRevokesURLPasswordAndBrowserSessions(t *testing.T) {
 	stableLogin(t, harness, "kuaifan", "first-account")
 	oldURL, oldCredentials := stableCapture(t, harness)
 	loginBody := fmt.Sprintf(`{"token":%q}`, stableToken)
-	caller, csrf := stableSession(t, stableRequest(harness.api, http.MethodPost, "/api/v1/access/login", loginBody, nil, ""))
-	other, _ := stableSession(t, stableRequest(harness.api, http.MethodPost, "/api/v1/access/login", loginBody, nil, ""))
-	response := stableRequest(harness.api, http.MethodPost, "/api/v1/access/token", fmt.Sprintf(`{"current":%q,"next":%q}`, stableToken, changedToken), caller, csrf)
-	replacement, _ := stableSession(t, response)
+	caller := stableSession(t, stableRequest(harness.api, http.MethodPost, "/api/v1/access/login", loginBody, nil))
+	other := stableSession(t, stableRequest(harness.api, http.MethodPost, "/api/v1/access/login", loginBody, nil))
+	response := stableRequest(harness.api, http.MethodPost, "/api/v1/access/token", fmt.Sprintf(`{"current":%q,"next":%q}`, stableToken, changedToken), caller)
+	replacement := stableSession(t, response)
 	for _, cookie := range []*http.Cookie{caller, other} {
-		if stableRequest(harness.api, http.MethodGet, "/api/v1/status", "", cookie, "").Code != http.StatusUnauthorized {
+		if stableRequest(harness.api, http.MethodGet, "/api/v1/status", "", cookie).Code != http.StatusUnauthorized {
 			t.Fatal("old browser session survived token change")
 		}
 	}
-	if stableRequest(harness.api, http.MethodGet, "/api/v1/status", "", replacement, "").Code != http.StatusOK {
+	if stableRequest(harness.api, http.MethodGet, "/api/v1/status", "", replacement).Code != http.StatusOK {
 		t.Fatal("caller replacement session invalid")
 	}
 	oldPath, _ := url.Parse(oldURL)
-	revoked := stableRequest(harness.api, http.MethodGet, oldPath.Path, "", nil, "")
+	revoked := stableRequest(harness.api, http.MethodGet, oldPath.Path, "", nil)
 	if revoked.Code != http.StatusNotFound || revoked.Body.Len() != 0 || revoked.Header().Get("Content-Length") != "0" || revoked.Header().Get("Cache-Control") != "no-store" {
 		t.Fatal("old URL did not return uniform empty 404")
 	}

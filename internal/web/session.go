@@ -13,7 +13,6 @@ import (
 )
 
 type browserSession struct {
-	csrf      string
 	expiresAt time.Time
 	done      chan struct{}
 }
@@ -61,12 +60,12 @@ func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, 
 	}
 	restoredAt := now().UTC()
 	var discarded [][]byte
-	if err := persistence.RestoreBrowserSessions(context.Background(), restoredAt, max, func(tokenHash []byte, csrf string, expiresAt time.Time) error {
+	if err := persistence.RestoreBrowserSessions(context.Background(), restoredAt, max, func(tokenHash []byte, expiresAt time.Time) error {
 		if expiresAt.After(restoredAt.Add(ttl)) {
 			discarded = append(discarded, append([]byte(nil), tokenHash...))
 			return nil
 		}
-		return store.restore(restoredAt, string(tokenHash), csrf, expiresAt)
+		return store.restore(restoredAt, string(tokenHash), expiresAt)
 	}); err != nil {
 		return nil, err
 	}
@@ -78,8 +77,8 @@ func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, 
 	return store, nil
 }
 
-func (s *sessionStore) restore(now time.Time, token, csrf string, expiresAt time.Time) error {
-	if len(token) != sha256.Size || !validBrowserSessionSecret(csrf) || !now.Before(expiresAt) || expiresAt.After(now.Add(s.ttl)) {
+func (s *sessionStore) restore(now time.Time, token string, expiresAt time.Time) error {
+	if len(token) != sha256.Size || !now.Before(expiresAt) || expiresAt.After(now.Add(s.ttl)) {
 		return errors.New("invalid persisted browser session")
 	}
 	s.mu.Lock()
@@ -90,7 +89,7 @@ func (s *sessionStore) restore(now time.Time, token, csrf string, expiresAt time
 	if _, exists := s.sessions[token]; exists {
 		return errors.New("duplicate persisted browser session")
 	}
-	s.sessions[token] = browserSession{csrf: csrf, expiresAt: expiresAt.UTC(), done: make(chan struct{})}
+	s.sessions[token] = browserSession{expiresAt: expiresAt.UTC(), done: make(chan struct{})}
 	return nil
 }
 
@@ -102,11 +101,7 @@ func (s *sessionStore) create(ctx context.Context) (string, browserSession, erro
 		if err != nil {
 			return "", browserSession{}, err
 		}
-		csrf, err := randomToken(s.random, 32)
-		if err != nil {
-			return "", browserSession{}, err
-		}
-		session := browserSession{csrf: csrf, expiresAt: s.now().UTC().Add(s.ttl), done: make(chan struct{})}
+		session := browserSession{expiresAt: s.now().UTC().Add(s.ttl), done: make(chan struct{})}
 		key := sessionKey(token)
 
 		s.mu.Lock()
@@ -132,7 +127,7 @@ func (s *sessionStore) create(ctx context.Context) (string, browserSession, erro
 		s.deleteBrowserSessions(ctx, expired)
 
 		if s.persistence != nil {
-			err = s.persistence.SaveBrowserSession(ctx, token, csrf, session.expiresAt, s.max)
+			err = s.persistence.SaveBrowserSession(ctx, token, session.expiresAt, s.max)
 		}
 		s.mu.Lock()
 		delete(s.pending, key)
@@ -278,11 +273,6 @@ func randomToken(random io.Reader, bytes int) (string, error) {
 		return "", err
 	}
 	return base64.RawURLEncoding.EncodeToString(value), nil
-}
-
-func validBrowserSessionSecret(value string) bool {
-	decoded, err := base64.RawURLEncoding.DecodeString(value)
-	return err == nil && len(decoded) == 32 && base64.RawURLEncoding.EncodeToString(decoded) == value
 }
 
 func (a *API) authenticate(r *http.Request) (string, browserSession, bool) {

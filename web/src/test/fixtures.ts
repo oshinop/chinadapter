@@ -47,17 +47,15 @@ export function makeApi(initialStatus = readyStatus(), initialNodes = nodes): Ap
   const state = {
     statusValue: initialStatus,
     nodeList: initialNodes,
-    access: { initialized: true, authenticated: true, csrfToken: "csrf-test" },
+    access: { initialized: true, authenticated: true },
   };
   return {
     get statusValue() { return state.statusValue; },
     set statusValue(next: StatusResponse) { state.statusValue = next; },
-    setCsrfToken: vi.fn(),
-    clearSession: vi.fn(),
     accessStatus: vi.fn().mockImplementation(async () => state.access),
-    setupAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, initialized: true, authenticated: true }; return { csrfToken: "csrf-test" }; }),
-    loginAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, authenticated: true }; return { csrfToken: "csrf-test" }; }),
-    changeAccessToken: vi.fn().mockResolvedValue({ csrfToken: "csrf-rotated" }),
+    setupAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, initialized: true, authenticated: true }; return {}; }),
+    loginAccess: vi.fn().mockImplementation(async () => { state.access = { ...state.access, authenticated: true }; return {}; }),
+    changeAccessToken: vi.fn().mockResolvedValue({}),
     status: vi.fn().mockImplementation(async () => state.statusValue),
     nodes: vi.fn().mockImplementation(async () => ({ nodes: state.nodeList })),
     nodeDetails: vi.fn().mockResolvedValue(chengduDetails),

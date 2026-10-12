@@ -41,7 +41,6 @@ export function useConsoleSession(providedApi?: ApiClient) {
     const loseAccessSession = useCallback(() => {
         sessionRevision.current += 1;
         reloadWork.current.queued = false;
-        api.clearSession();
         clearConsoleData();
         setSession("access_login");
         replaceRoute("/");
@@ -192,8 +191,6 @@ export function useConsoleSession(providedApi?: ApiClient) {
                 !isSessionProblem(error)
             )
                 setLoadError(describeError(error));
-        } finally {
-            api.clearSession();
         }
     };
 

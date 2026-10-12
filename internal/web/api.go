@@ -43,11 +43,11 @@ type Config struct {
 	SSEHeartbeat           time.Duration
 }
 
-// BrowserSessionPersistence stores only opaque browser-session and CSRF
-// secrets. It never receives provider credentials or local access tokens.
+// BrowserSessionPersistence stores only hashed browser-session identities and
+// expiry. It never receives provider credentials or local access tokens.
 type BrowserSessionPersistence interface {
-	RestoreBrowserSessions(context.Context, time.Time, int, func(tokenHash []byte, csrf string, expiresAt time.Time) error) error
-	SaveBrowserSession(context.Context, string, string, time.Time, int) error
+	RestoreBrowserSessions(context.Context, time.Time, int, func(tokenHash []byte, expiresAt time.Time) error) error
+	SaveBrowserSession(context.Context, string, time.Time, int) error
 	DeleteBrowserSession(context.Context, []byte) error
 	DeleteAllBrowserSessions(context.Context) error
 }

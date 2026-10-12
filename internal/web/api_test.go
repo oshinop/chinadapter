@@ -285,11 +285,11 @@ func TestAPIWildcardAndHostnamePolicy(t *testing.T) {
 		api.ServeHTTP(response, request)
 		return response
 	}
-	if malformedOrigin := setup("http://" + remoteHost + "/"); malformedOrigin.Code != http.StatusForbidden {
-		t.Fatalf("malformed Origin = %d", malformedOrigin.Code)
+	if crossOrigin := setup("http://evil.test"); crossOrigin.Code != http.StatusForbidden || !strings.Contains(crossOrigin.Body.String(), `"code":"invalid_origin"`) {
+		t.Fatalf("cross-origin setup = %d: %s", crossOrigin.Code, crossOrigin.Body.String())
 	}
-	if exactOrigin := setup("http://" + remoteHost); exactOrigin.Code != http.StatusCreated {
-		t.Fatalf("exact Origin = %d: %s", exactOrigin.Code, exactOrigin.Body.String())
+	if sameHostOrigin := setup("http://" + remoteHost + "/"); sameHostOrigin.Code != http.StatusCreated {
+		t.Fatalf("same-host Origin = %d: %s", sameHostOrigin.Code, sameHostOrigin.Body.String())
 	}
 }
 
@@ -345,7 +345,7 @@ func TestAPIAdvertisesHostnameUsedByRequest(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 
 	statusRequest := httptest.NewRequest(http.MethodGet, "http://adapter.example.com:10809/api/v1/status", nil)
 	statusRequest.Host = "adapter.example.com:10809"
@@ -386,7 +386,7 @@ func TestAPIAdvertisesImplicitLocalhost(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 
 	statusRequest := httptest.NewRequest(http.MethodGet, "http://LOCALHOST:10809/api/v1/status", nil)
 	statusRequest.Host = "LOCALHOST:10809"
@@ -426,7 +426,7 @@ func TestAccessSetupLoginStatusAndReload(t *testing.T) {
 	api := newTestAPI(t, backend, newFakeSubscriptions())
 
 	initial := request(api, http.MethodGet, "/api/v1/access/status", "", nil, "")
-	assertAccessStatus(t, initial, false, false, false)
+	assertAccessStatus(t, initial, false, false)
 	if initial.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("access status cache control = %q", initial.Header().Get("Cache-Control"))
 	}
@@ -435,8 +435,8 @@ func TestAccessSetupLoginStatusAndReload(t *testing.T) {
 	if setup.Code != http.StatusCreated {
 		t.Fatalf("setup = %d: %s", setup.Code, setup.Body.String())
 	}
-	cookie, csrf := sessionFromResponse(t, setup)
-	assertAccessStatus(t, setup, true, true, true)
+	cookie := sessionFromResponse(t, setup)
+	assertAccessStatus(t, setup, true, true)
 	backend.mu.Lock()
 	storedToken := backend.accessToken
 	backend.mu.Unlock()
@@ -445,16 +445,7 @@ func TestAccessSetupLoginStatusAndReload(t *testing.T) {
 	}
 
 	reloaded := request(api, http.MethodGet, "/api/v1/access/status", "", cookie, "")
-	assertAccessStatus(t, reloaded, true, true, true)
-	var reloadBody struct {
-		CSRFToken string `json:"csrfToken"`
-	}
-	if err := json.NewDecoder(reloaded.Body).Decode(&reloadBody); err != nil {
-		t.Fatal(err)
-	}
-	if reloadBody.CSRFToken != csrf {
-		t.Fatalf("reload csrf = %q, want original session csrf", reloadBody.CSRFToken)
-	}
+	assertAccessStatus(t, reloaded, true, true)
 
 	conflict := request(api, http.MethodPost, "/api/v1/access/setup", `{"token":"`+validTestToken+`"}`, nil, testOrigin)
 	if conflict.Code != http.StatusConflict || !strings.Contains(conflict.Body.String(), "access_initialized") {
@@ -468,7 +459,7 @@ func TestAccessSetupLoginStatusAndReload(t *testing.T) {
 	if login.Code != http.StatusOK {
 		t.Fatalf("access login = %d: %s", login.Code, login.Body.String())
 	}
-	_, _ = sessionFromResponse(t, login)
+	sessionFromResponse(t, login)
 }
 
 func TestAccessTokenValidationBounds(t *testing.T) {
@@ -551,7 +542,7 @@ func TestAccessThrottleAndPreSessionChecks(t *testing.T) {
 	if nonJSON.Code != http.StatusUnsupportedMediaType {
 		t.Fatalf("non-JSON login = %d", nonJSON.Code)
 	}
-	_, _ = establish(t, api)
+	establish(t, api)
 	for attempt := range 5 {
 		response := request(api, http.MethodPost, "/api/v1/access/login", `{"token":"`+invalidTestToken+`"}`, nil, testOrigin)
 		if response.Code != http.StatusUnauthorized {
@@ -567,20 +558,20 @@ func TestAccessThrottleAndPreSessionChecks(t *testing.T) {
 func TestAccountLogoutPreservesBrowserAccess(t *testing.T) {
 	backend := &fakeBackend{}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 
-	missingCSRF := request(api, http.MethodPost, "/api/v1/auth/logout", `{"provider":"kuaifan"}`, cookie, testOrigin)
-	if missingCSRF.Code != http.StatusForbidden {
-		t.Fatalf("account logout without csrf = %d", missingCSRF.Code)
+	crossOrigin := rawRequest(api, http.MethodPost, "/api/v1/auth/logout", `{"provider":"kuaifan"}`, cookie, testOrigin, "cross-site")
+	if crossOrigin.Code != http.StatusForbidden || !strings.Contains(crossOrigin.Body.String(), `"code":"invalid_origin"`) {
+		t.Fatalf("cross-origin account logout = %d: %s", crossOrigin.Code, crossOrigin.Body.String())
 	}
 	backend.mu.Lock()
 	logoutCalls := backend.logoutCalls
 	backend.mu.Unlock()
 	if logoutCalls != 0 {
-		t.Fatalf("account logout backend calls without csrf = %d", logoutCalls)
+		t.Fatalf("cross-origin account logout backend calls = %d", logoutCalls)
 	}
 
-	logout := requestWithCSRF(api, http.MethodPost, "/api/v1/auth/logout", `{"provider":"kuaifan"}`, cookie, csrf)
+	logout := request(api, http.MethodPost, "/api/v1/auth/logout", `{"provider":"kuaifan"}`, cookie, testOrigin)
 	if logout.Code != http.StatusNoContent || logout.Header().Get("Cache-Control") != "no-store" || logout.Header().Get("Set-Cookie") != "" {
 		t.Fatalf("account logout = %d %#v", logout.Code, logout.Header())
 	}
@@ -592,7 +583,7 @@ func TestAccountLogoutPreservesBrowserAccess(t *testing.T) {
 		t.Fatalf("account logout backend = calls:%d provider:%q", logoutCalls, logoutProvider)
 	}
 	accessStatus := request(api, http.MethodGet, "/api/v1/access/status", "", cookie, "")
-	assertAccessStatus(t, accessStatus, true, true, true)
+	assertAccessStatus(t, accessStatus, true, true)
 	status := request(api, http.MethodGet, "/api/v1/status", "", cookie, "")
 	if status.Code != http.StatusOK || !strings.Contains(status.Body.String(), `"providers":["kuaifan"]`) || !strings.Contains(status.Body.String(), `"accounts":{"kuaifan"`) || !strings.Contains(status.Body.String(), `"tier":"Standard","subscriptionActive":false`) || strings.Contains(status.Body.String(), "person@example.com") || strings.Contains(status.Body.String(), "subscriptionEndsAt") {
 		t.Fatalf("provider status after account logout = %d: %s", status.Code, status.Body.String())
@@ -602,17 +593,17 @@ func TestAccountLogoutPreservesBrowserAccess(t *testing.T) {
 func TestAuthenticatedMutationsAccountLoginAndAccessLock(t *testing.T) {
 	backend := &fakeBackend{}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 
-	missingCSRF := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, testOrigin)
-	if missingCSRF.Code != http.StatusForbidden {
-		t.Fatalf("mutation without csrf = %d", missingCSRF.Code)
+	crossOrigin := rawRequest(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, testOrigin, "cross-site")
+	if crossOrigin.Code != http.StatusForbidden || !strings.Contains(crossOrigin.Body.String(), `"code":"invalid_origin"`) {
+		t.Fatalf("cross-origin mutation = %d: %s", crossOrigin.Code, crossOrigin.Body.String())
 	}
-	refreshed := requestWithCSRF(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, csrf)
+	refreshed := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, testOrigin)
 	if refreshed.Code != http.StatusAccepted {
 		t.Fatalf("refresh = %d: %s", refreshed.Code, refreshed.Body.String())
 	}
-	accountLogin := requestWithCSRF(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, csrf)
+	accountLogin := request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
 	if accountLogin.Code != http.StatusOK || strings.Contains(accountLogin.Body.String(), "person@example.com") {
 		t.Fatalf("account login = %d: %s", accountLogin.Code, accountLogin.Body.String())
 	}
@@ -626,8 +617,8 @@ func TestAuthenticatedMutationsAccountLoginAndAccessLock(t *testing.T) {
 	if otherLogin.Code != http.StatusOK {
 		t.Fatalf("second access login = %d: %s", otherLogin.Code, otherLogin.Body.String())
 	}
-	otherCookie, _ := sessionFromResponse(t, otherLogin)
-	lock := requestWithCSRF(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, csrf)
+	otherCookie := sessionFromResponse(t, otherLogin)
+	lock := request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
 	if lock.Code != http.StatusNoContent || lock.Header().Get("Cache-Control") != "no-store" || !strings.Contains(lock.Header().Get("Set-Cookie"), "Max-Age=0") {
 		t.Fatalf("access lock = %d %#v", lock.Code, lock.Header())
 	}
@@ -654,11 +645,11 @@ func TestAccessLockCompletesDuringProviderLogin(t *testing.T) {
 	release := make(chan struct{})
 	backend := &fakeBackend{accountLoginStarted: started, accountLoginRelease: release}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, csrf := establish(t, api)
+	cookie := establish(t, api)
 
 	loginResponses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		loginResponses <- requestWithCSRF(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, csrf)
+		loginResponses <- request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
 	}()
 	select {
 	case <-started:
@@ -668,7 +659,7 @@ func TestAccessLockCompletesDuringProviderLogin(t *testing.T) {
 
 	logoutResponses := make(chan *httptest.ResponseRecorder, 1)
 	go func() {
-		logoutResponses <- requestWithCSRF(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, csrf)
+		logoutResponses <- request(api, http.MethodPost, "/api/v1/access/logout", `{}`, cookie, testOrigin)
 	}()
 	select {
 	case logout := <-logoutResponses:
@@ -719,8 +710,8 @@ func TestNodeDetailsRequiresAuthenticationAndUsesExactRoute(t *testing.T) {
 		t.Fatalf("unauthenticated node details backend calls = %d", detailCalls)
 	}
 
-	cookie, csrf := establish(t, api)
-	wrongMethod := requestWithCSRF(api, http.MethodPost, "/api/v1/nodes/"+nodeID+"/details", `{}`, cookie, csrf)
+	cookie := establish(t, api)
+	wrongMethod := request(api, http.MethodPost, "/api/v1/nodes/"+nodeID+"/details", `{}`, cookie, testOrigin)
 	if wrongMethod.Code != http.StatusMethodNotAllowed || wrongMethod.Header().Get("Allow") != "GET, HEAD" || wrongMethod.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("node details wrong method = %d %#v", wrongMethod.Code, wrongMethod.Header())
 	}
@@ -748,7 +739,7 @@ func TestNodesOmitLegacyEndpointAndExcludedFields(t *testing.T) {
 	}
 	backend := &fakeBackend{nodes: []Node{expected}}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 
 	response := request(api, http.MethodGet, "/api/v1/nodes", "", cookie, "")
 	if response.Code != http.StatusOK {
@@ -788,7 +779,7 @@ func TestNodeDetailsReturnsOnlyLocalCredentials(t *testing.T) {
 	}
 	backend := &fakeBackend{nodeDetails: expected}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 
 	response := request(api, http.MethodGet, "/api/v1/nodes/"+expected.ID+"/details", "", cookie, "")
 	if response.Code != http.StatusOK {
@@ -820,7 +811,7 @@ func TestStatusUsesReachedLANAddress(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 	statusRequest := httptest.NewRequest(http.MethodGet, "http://192.0.2.10:10809/api/v1/status", nil)
 	statusRequest.Host = "192.0.2.10:10809"
 	statusRequest.AddCookie(cookie)
@@ -850,7 +841,7 @@ func TestStableSubscriptionURLAndRemovedRoutes(t *testing.T) {
 	backend := &fakeBackend{}
 	subscriptions := newFakeSubscriptions()
 	api := newTestAPI(t, backend, subscriptions)
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 
 	first := request(api, http.MethodGet, "/api/v1/subscription/url", "", cookie, "")
 	second := request(api, http.MethodGet, "/api/v1/subscription/url", "", cookie, "")
@@ -910,7 +901,7 @@ func TestStableSubscriptionURLAndRemovedRoutes(t *testing.T) {
 func TestSSESurvivesAccessMigration(t *testing.T) {
 	backend := &fakeBackend{events: make(chan Event), subscribed: make(chan struct{}, 1)}
 	api := newTestAPI(t, backend, newFakeSubscriptions())
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 	context, cancel := context.WithCancel(context.Background())
 	defer cancel()
 	req := httptest.NewRequest(http.MethodGet, "http://"+testHost+"/api/v1/events", nil).WithContext(context)
@@ -940,7 +931,92 @@ func TestSSESurvivesAccessMigration(t *testing.T) {
 	}
 }
 
-func establish(t *testing.T, api *API) (*http.Cookie, string) {
+func TestAPIMutationsRejectCrossOrigin(t *testing.T) {
+	api := newTestAPI(t, &fakeBackend{}, newFakeSubscriptions())
+	cookie := establish(t, api)
+	for _, route := range api.routes() {
+		if route.method != http.MethodPost {
+			continue
+		}
+		path := strings.ReplaceAll(route.path, "{id}", "node-alpha")
+		for _, test := range []struct {
+			name, origin, fetchSite string
+		}{
+			{name: "fetch-site", origin: testOrigin, fetchSite: "cross-site"},
+			{name: "origin", origin: "http://evil.test"},
+		} {
+			t.Run(path+"/"+test.name, func(t *testing.T) {
+				response := rawRequest(api, route.method, path, `{}`, cookie, test.origin, test.fetchSite)
+				if response.Code != http.StatusForbidden || !strings.HasPrefix(response.Header().Get("Content-Type"), "application/problem+json") || response.Header().Get("Cache-Control") != "no-store" || response.Header().Get("X-Content-Type-Options") != "nosniff" {
+					t.Fatalf("cross-origin rejection = %d %#v", response.Code, response.Header())
+				}
+				var problem struct {
+					Code   string `json:"code"`
+					Status int    `json:"status"`
+					Title  string `json:"title"`
+				}
+				if err := json.NewDecoder(response.Body).Decode(&problem); err != nil {
+					t.Fatal(err)
+				}
+				if problem.Code != "invalid_origin" || problem.Status != http.StatusForbidden || problem.Title != "Invalid Origin" {
+					t.Fatalf("cross-origin problem = %#v", problem)
+				}
+			})
+		}
+	}
+}
+
+func TestAPIMutationCrossOriginProtection(t *testing.T) {
+	api := newTestAPI(t, &fakeBackend{}, newFakeSubscriptions())
+	cookie := establish(t, api)
+	for _, test := range []struct {
+		name, origin, fetchSite string
+		want                    int
+	}{
+		{name: "same-origin-fetch-site", fetchSite: "same-origin", want: http.StatusAccepted},
+		{name: "same-origin-origin", origin: testOrigin, want: http.StatusAccepted},
+		{name: "non-browser", want: http.StatusAccepted},
+		{name: "cross-site", origin: testOrigin, fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "same-site", origin: testOrigin, fetchSite: "same-site", want: http.StatusForbidden},
+		{name: "mismatched-origin", origin: "http://evil.test", want: http.StatusForbidden},
+		{name: "mismatched-port", origin: "http://127.0.0.1:10810", want: http.StatusForbidden},
+		{name: "null-origin", origin: "null", want: http.StatusForbidden},
+		{name: "cross-origin-scheme-fetch-site", origin: "https://" + testHost, fetchSite: "cross-site", want: http.StatusForbidden},
+		{name: "same-host-scheme-fallback", origin: "https://" + testHost, want: http.StatusAccepted},
+	} {
+		t.Run(test.name, func(t *testing.T) {
+			response := rawRequest(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, cookie, test.origin, test.fetchSite)
+			if response.Code != test.want {
+				t.Fatalf("mutation = %d: %s", response.Code, response.Body.String())
+			}
+			if test.want == http.StatusForbidden && !strings.Contains(response.Body.String(), `"code":"invalid_origin"`) {
+				t.Fatalf("cross-origin problem = %s", response.Body.String())
+			}
+		})
+	}
+	if response := request(api, http.MethodPost, "/api/v1/control/refresh", `{"provider":"kuaifan"}`, nil, ""); response.Code != http.StatusUnauthorized {
+		t.Fatalf("non-browser without session = %d", response.Code)
+	}
+	if response := request(api, http.MethodPost, "/api/v1/control/refresh", "", cookie, ""); response.Code != http.StatusUnsupportedMediaType {
+		t.Fatalf("non-browser without JSON content type = %d", response.Code)
+	}
+}
+
+func TestSSERequiresExactOriginEvenWithSameOriginFetchSite(t *testing.T) {
+	api := newTestAPI(t, &fakeBackend{}, newFakeSubscriptions())
+	cookie := establish(t, api)
+	for _, origin := range []string{"", "http://evil.test", testOrigin + "/", "https://" + testHost} {
+		response := rawRequest(api, http.MethodGet, "/api/v1/events", "", cookie, origin, "same-origin")
+		if response.Code != http.StatusForbidden || !strings.Contains(response.Body.String(), `"code":"invalid_origin"`) {
+			t.Fatalf("SSE Origin %q = %d: %s", origin, response.Code, response.Body.String())
+		}
+	}
+	if response := rawRequest(api, http.MethodGet, "/api/v1/status", "", cookie, "http://evil.test", "cross-site"); response.Code != http.StatusOK {
+		t.Fatalf("safe status = %d: %s", response.Code, response.Body.String())
+	}
+}
+
+func establish(t *testing.T, api *API) *http.Cookie {
 	t.Helper()
 	response := request(api, http.MethodPost, "/api/v1/access/setup", `{"token":"`+validTestToken+`"}`, nil, testOrigin)
 	if response.Code != http.StatusCreated {
@@ -949,22 +1025,17 @@ func establish(t *testing.T, api *API) (*http.Cookie, string) {
 	return sessionFromResponse(t, response)
 }
 
-func sessionFromResponse(t *testing.T, response *httptest.ResponseRecorder) (*http.Cookie, string) {
+func sessionFromResponse(t *testing.T, response *httptest.ResponseRecorder) *http.Cookie {
 	t.Helper()
 	cookies := response.Result().Cookies()
 	if len(cookies) != 1 || !cookies[0].HttpOnly || cookies[0].SameSite != http.SameSiteStrictMode {
 		t.Fatalf("session cookie = %#v", cookies)
 	}
-	var body struct {
-		CSRFToken string `json:"csrfToken"`
-	}
-	if err := json.NewDecoder(bytes.NewReader(response.Body.Bytes())).Decode(&body); err != nil || body.CSRFToken == "" {
-		t.Fatalf("session response = %v %q", err, response.Body.String())
-	}
-	return cookies[0], body.CSRFToken
+	assertAccessStatus(t, response, true, true)
+	return cookies[0]
 }
 
-func assertAccessStatus(t *testing.T, response *httptest.ResponseRecorder, initialized, authenticated, csrf bool) {
+func assertAccessStatus(t *testing.T, response *httptest.ResponseRecorder, initialized, authenticated bool) {
 	t.Helper()
 	if response.Code != http.StatusOK && response.Code != http.StatusCreated {
 		t.Fatalf("access status response = %d: %s", response.Code, response.Body.String())
@@ -972,26 +1043,23 @@ func assertAccessStatus(t *testing.T, response *httptest.ResponseRecorder, initi
 	var body struct {
 		Initialized   bool       `json:"initialized"`
 		Authenticated bool       `json:"authenticated"`
-		CSRFToken     string     `json:"csrfToken"`
 		ExpiresAt     *time.Time `json:"expiresAt"`
 	}
-	if err := json.NewDecoder(bytes.NewReader(response.Body.Bytes())).Decode(&body); err != nil {
+	decoder := json.NewDecoder(bytes.NewReader(response.Body.Bytes()))
+	decoder.DisallowUnknownFields()
+	if err := decoder.Decode(&body); err != nil {
 		t.Fatal(err)
 	}
-	if body.Initialized != initialized || body.Authenticated != authenticated || (body.CSRFToken != "") != csrf || (body.ExpiresAt != nil) != csrf {
+	if body.Initialized != initialized || body.Authenticated != authenticated || (body.ExpiresAt != nil) != authenticated {
 		t.Fatalf("access status = %#v", body)
 	}
-}
-
-func requestWithCSRF(api *API, method, route, body string, cookie *http.Cookie, csrf string) *httptest.ResponseRecorder {
-	return rawRequest(api, method, route, body, cookie, testOrigin, csrf)
 }
 
 func request(api *API, method, route, body string, cookie *http.Cookie, origin string) *httptest.ResponseRecorder {
 	return rawRequest(api, method, route, body, cookie, origin, "")
 }
 
-func rawRequest(api *API, method, route, body string, cookie *http.Cookie, origin, csrf string) *httptest.ResponseRecorder {
+func rawRequest(api *API, method, route, body string, cookie *http.Cookie, origin, fetchSite string) *httptest.ResponseRecorder {
 	var reader *strings.Reader
 	if body != "" {
 		reader = strings.NewReader(body)
@@ -1006,8 +1074,8 @@ func rawRequest(api *API, method, route, body string, cookie *http.Cookie, origi
 	if origin != "" {
 		req.Header.Set("Origin", origin)
 	}
-	if csrf != "" {
-		req.Header.Set(csrfHeaderName, csrf)
+	if fetchSite != "" {
+		req.Header.Set("Sec-Fetch-Site", fetchSite)
 	}
 	if cookie != nil {
 		req.AddCookie(cookie)

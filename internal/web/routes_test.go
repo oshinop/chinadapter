@@ -11,7 +11,7 @@ func TestRouteTableWrongMethodsAndHEAD(t *testing.T) {
 	closedEvents := make(chan Event)
 	close(closedEvents)
 	api := newTestAPI(t, &fakeBackend{events: closedEvents}, newFakeSubscriptions())
-	cookie, _ := establish(t, api)
+	cookie := establish(t, api)
 	for _, route := range api.routes() {
 		path := strings.ReplaceAll(route.path, "{id}", "node-alpha")
 		t.Run(route.method+" "+path, func(t *testing.T) {

@@ -1,7 +1,6 @@
 package web
 
 import (
-	"crypto/subtle"
 	"errors"
 	"mime"
 	"net"
@@ -14,7 +13,6 @@ import (
 
 const (
 	sessionCookieName = "kfadapter_session"
-	csrfHeaderName    = "X-CSRF-Token"
 	defaultJSONLimit  = 64 << 10
 	accessTokenLimit  = 4 << 10
 )
@@ -61,15 +59,11 @@ func (a *API) browserBoundary(route apiRoute) http.Handler {
 			}
 		}
 		mutation := route.method == http.MethodPost
-		if mutation || route.path == "/api/v1/events" {
+		if route.path == "/api/v1/events" {
 			if !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
 				a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin")
 				return
 			}
-		}
-		if mutation && !route.public && !exactSecretEqual(session.csrf, r.Header.Get(csrfHeaderName)) {
-			a.writeProblem(w, http.StatusForbidden, "csrf_failed", "CSRF validation failed")
-			return
 		}
 		if mutation && !isJSONContentType(r.Header.Get("Content-Type")) {
 			a.writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Unsupported Content Type")
@@ -138,13 +132,6 @@ func canonicalNumericAddress(hostport string) (netip.Addr, string, error) {
 		return netip.Addr{}, "", errors.New("address must be canonical")
 	}
 	return ip, port, nil
-}
-
-func exactSecretEqual(expected, given string) bool {
-	if expected == "" || len(expected) != len(given) {
-		return false
-	}
-	return subtle.ConstantTimeCompare([]byte(expected), []byte(given)) == 1
 }
 
 func isJSONContentType(header string) bool {
