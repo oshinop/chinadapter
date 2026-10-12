@@ -19,6 +19,8 @@ import (
 	"net/url"
 	"strings"
 	"time"
+
+	"github.com/kfadapter/kfadapter/internal/provider"
 )
 
 const (
@@ -29,7 +31,7 @@ const (
 	responseKey         = "5bj6PNkQ8aleI5MN"
 	apiIV               = "PNkQ8aleI5MNgj6r"
 	maxRequestBytes     = 64 << 10
-	maxResponseBytes    = 16 << 20
+	maxResponseBytes    = 1 << 20
 	maxControlFieldSize = 4096
 )
 
@@ -50,6 +52,14 @@ func (err *httpStatusError) Error() string {
 
 func (err *httpStatusError) Unwrap() error { return ErrHTTPStatus }
 
+type businessCodeError struct{ code int }
+
+func (err *businessCodeError) Error() string {
+	return fmt.Sprintf("%s: %d", ErrBusinessCode, err.code)
+}
+
+func (err *businessCodeError) Unwrap() error { return ErrBusinessCode }
+
 // Config configures the fixed-origin QuickFox HTTPS client.
 type Config struct {
 	Location       *time.Location
@@ -65,6 +75,7 @@ type Config struct {
 
 // Client implements QuickFox's encrypted HTTPS control protocol without
 // retaining account credentials or session authority.
+// Control response envelopes are limited to 1 MiB, including streamed replies.
 type Client struct {
 	httpClient     *http.Client
 	apiBase        *url.URL
@@ -150,7 +161,7 @@ func (c *Client) Login(ctx context.Context, account, password, installationID st
 	account = strings.TrimSpace(account)
 	deviceCode, err := deviceCode(installationID)
 	if err != nil || !validControlString(account) || password == "" || len(password) > maxControlFieldSize {
-		return session{}, ErrLoginRejected
+		return session{}, provider.ErrInvalidInput
 	}
 	digest := md5.Sum([]byte(password)) // #nosec G401 -- required by the observed QuickFox login protocol.
 	payload := loginPayload{
@@ -161,8 +172,9 @@ func (c *Client) Login(ctx context.Context, account, password, installationID st
 	}
 	var response loginResponse
 	if err := c.do(ctx, http.MethodPost, "/user/login", payload, "", deviceCode, &response); err != nil {
-		if errors.Is(err, ErrBusinessCode) {
-			return session{}, ErrLoginRejected
+		var rejection *businessCodeError
+		if errors.As(err, &rejection) {
+			return session{}, fmt.Errorf("%w: %d", ErrLoginRejected, rejection.code)
 		}
 		return session{}, err
 	}
@@ -269,6 +281,9 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, token
 	if response.StatusCode != http.StatusOK {
 		return &httpStatusError{status: response.StatusCode}
 	}
+	if response.ContentLength > maxResponseBytes {
+		return ErrSchema
+	}
 	encoded, err := io.ReadAll(io.LimitReader(response.Body, maxResponseBytes+1))
 	if err != nil {
 		return fmt.Errorf("quickfox: read response: %w", err)
@@ -281,7 +296,7 @@ func (c *Client) do(ctx context.Context, method, path string, payload any, token
 		return ErrSchema
 	}
 	if *wrapped.Code != http.StatusOK || !*wrapped.Success {
-		return ErrBusinessCode
+		return &businessCodeError{code: *wrapped.Code}
 	}
 	decoded, err := decodeData(wrapped.Data)
 	if err != nil {
@@ -305,11 +320,13 @@ func decodeData(raw json.RawMessage) ([]byte, error) {
 		return nil, ErrSchema
 	}
 	ciphertext, err := base64.StdEncoding.DecodeString(encoded)
-	if err != nil || len(ciphertext) > maxResponseBytes {
+	if err != nil || len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 || len(ciphertext) > maxResponseBytes {
 		return nil, ErrCrypto
 	}
+	// Keep the ciphertext intact while both keys decrypt into the same scratch.
+	scratch := make([]byte, len(ciphertext))
 	for _, key := range []string{responseKey, requestKey} {
-		plaintext, decryptErr := decryptCBC(ciphertext, []byte(key))
+		plaintext, decryptErr := decryptCBC(ciphertext, []byte(key), scratch)
 		if decryptErr == nil && json.Valid(plaintext) {
 			return plaintext, nil
 		}
@@ -332,16 +349,16 @@ func encryptCBC(plaintext, key []byte) ([]byte, error) {
 	return padded, nil
 }
 
-func decryptCBC(ciphertext, key []byte) ([]byte, error) {
-	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 {
+func decryptCBC(ciphertext, key, scratch []byte) ([]byte, error) {
+	if len(ciphertext) == 0 || len(ciphertext)%aes.BlockSize != 0 || len(scratch) != len(ciphertext) {
 		return nil, ErrCrypto
 	}
 	block, err := aes.NewCipher(key)
 	if err != nil {
 		return nil, ErrCrypto
 	}
-	plaintext := append([]byte(nil), ciphertext...)
-	cipher.NewCBCDecrypter(block, []byte(apiIV)).CryptBlocks(plaintext, plaintext)
+	plaintext := scratch
+	cipher.NewCBCDecrypter(block, []byte(apiIV)).CryptBlocks(plaintext, ciphertext)
 	padding := int(plaintext[len(plaintext)-1])
 	if padding == 0 || padding > aes.BlockSize || padding > len(plaintext) {
 		return nil, ErrCrypto

@@ -52,14 +52,14 @@ func TestOutboundHeaderDeterministicVector(t *testing.T) {
 }
 
 func TestProviderExtensionExact(t *testing.T) {
-	got, err := ProviderExtension("token", "order", "user")
+	got, err := ProviderExtensionForProfile("ios", "token", "order", "user")
 	if err != nil {
 		t.Fatal(err)
 	}
 	if want := "|token|cc.fancast.major|order|user|MAC|1.0.46"; got != want {
 		t.Fatalf("extension = %q, want %q", got, want)
 	}
-	if _, err := ProviderExtension("token|split", "order", "user"); !errors.Is(err, ErrInvalidProviderData) {
+	if _, err := ProviderExtensionForProfile("ios", "token|split", "order", "user"); !errors.Is(err, ErrInvalidProviderData) {
 		t.Fatalf("invalid extension error = %v", err)
 	}
 }

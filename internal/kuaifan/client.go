@@ -214,15 +214,33 @@ func (c *Client) FetchClientConfig(ctx context.Context) (ClientConfig, error) {
 	return ClientConfig{APIBase: base}, nil
 }
 
-// FetchConfig is retained as a concise synonym for FetchClientConfig.
-func (c *Client) FetchConfig(ctx context.Context) (ClientConfig, error) {
-	return c.FetchClientConfig(ctx)
-}
-
 // AccountProfile is the account metadata validated by user/refresh.do.
 type AccountProfile struct {
 	IsVIP     bool
 	VIPEndsAt time.Time
+}
+
+func sessionFromFields(fields map[string]json.RawMessage, base *url.URL) (LoginSession, error) {
+	token, err := requiredString(fields, "token")
+	if err != nil {
+		return LoginSession{}, err
+	}
+	userID, err := requiredPositiveInt32(fields, "userId")
+	if err != nil {
+		return LoginSession{}, err
+	}
+	isVIP, err := requiredBool(fields, "isVip")
+	if err != nil {
+		return LoginSession{}, err
+	}
+	vipEndsAt, err := requiredUnixMilli(fields, "vipEndTime")
+	if err != nil || isVIP && vipEndsAt.IsZero() {
+		return LoginSession{}, ErrSchema
+	}
+	return LoginSession{
+		UserID: userID, Token: token, APIBase: cloneURL(base),
+		Profile: AccountProfile{IsVIP: isVIP, VIPEndsAt: vipEndsAt},
+	}, nil
 }
 
 // LoginSession is provisional credential material. It is kept only in memory
@@ -383,12 +401,16 @@ func requestEnvelope(fields any, language, timestamp string, randomness io.Reade
 	if err := json.Unmarshal(encoded, &payload); err != nil || payload == nil {
 		return nil, fmt.Errorf("control: request fields must be an object: %w", err)
 	}
-	payload["lang"] = language
-	nonce, err := wireprofile.RandomInt(randomness, 100000000)
-	if err != nil {
-		return nil, fmt.Errorf("control: nonce: %w", err)
+	if _, hasLanguage := payload["lang"]; !hasLanguage {
+		payload["lang"] = language
 	}
-	payload["nonce"] = fmt.Sprintf("%08d", nonce)
+	if _, hasNonce := payload["nonce"]; !hasNonce {
+		nonce, err := wireprofile.RandomInt(randomness, 100000000)
+		if err != nil {
+			return nil, fmt.Errorf("control: nonce: %w", err)
+		}
+		payload["nonce"] = fmt.Sprintf("%08d", nonce)
+	}
 	if _, hasTime := payload["time"]; !hasTime {
 		payload["time"] = timestamp
 	}
@@ -573,28 +595,6 @@ func authorityKeyWithinLimit(key authorityKey) bool {
 }
 
 func withinLimit(value string, limit int) bool { return len(value) <= limit }
-
-func buildProviderExtension(providerToken, orderID, userID string) (string, error) {
-	for _, field := range []string{providerToken, orderID, userID} {
-		if !validProviderExtensionField(field) {
-			return "", ErrSchema
-		}
-	}
-	return "|" + providerToken + "|" + wireprofile.IOSPackageName + "|" + orderID + "|" + userID + "|" + wireprofile.IOSProviderDevice + "|" + wireprofile.IOSProviderVersion, nil
-}
-
-func validProviderExtensionField(value string) bool {
-	if value == "" || !withinLimit(value, maxControlFieldBytes) {
-		return false
-	}
-	for index := 0; index < len(value); index++ {
-		character := value[index]
-		if character < 0x21 || character > 0x7e || character == '|' {
-			return false
-		}
-	}
-	return true
-}
 
 func optionalNestedString(fields map[string]json.RawMessage, outer, inner string) (string, bool) {
 	raw, ok := fields[outer]

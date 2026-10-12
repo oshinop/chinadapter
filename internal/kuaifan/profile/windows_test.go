@@ -3,6 +3,7 @@ package profile
 import (
 	"bytes"
 	"encoding/json"
+	"errors"
 	"testing"
 )
 
@@ -63,7 +64,7 @@ func TestWindowsLoginFieldsMatchRecoveredProfile(t *testing.T) {
 
 func TestWindowsDefinition(t *testing.T) {
 	t.Parallel()
-	var definition Definition = Windows{}
+	definition := Windows{}
 	if definition.ID() != WindowsID || definition.UserAgent() != WindowsUserAgent || definition.RequiresPostLoginRefresh() {
 		t.Fatalf("Windows definition = %#v", definition)
 	}
@@ -72,5 +73,11 @@ func TestWindowsDefinition(t *testing.T) {
 	}
 	if eligible, err := definition.ValidateLine("WS", ""); err != nil || eligible {
 		t.Fatalf("Windows WS eligibility = %t, %v", eligible, err)
+	}
+	if eligible, err := definition.ValidateLine("FUTURE", ""); err != nil || eligible {
+		t.Fatalf("unknown Windows provider eligibility = %t, %v", eligible, err)
+	}
+	if eligible, err := definition.ValidateLine("WIFIIN", "wrong-password"); !errors.Is(err, ErrInvalidLine) || eligible {
+		t.Fatalf("malformed Windows WIFIIN line = %t, %v", eligible, err)
 	}
 }

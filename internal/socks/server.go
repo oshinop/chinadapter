@@ -521,6 +521,9 @@ func targetFromAddr(address net.Addr) target {
 }
 
 func dialReply(err error) byte {
+	if errors.Is(err, provider.ErrAddressUnsupported) {
+		return replyAddressUnsupported
+	}
 	if errors.Is(err, context.DeadlineExceeded) {
 		return replyTTLExpired
 	}

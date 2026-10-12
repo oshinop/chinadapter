@@ -460,7 +460,7 @@ func decodeTunnelAuthority(encoded []byte) (tunnelAuthority, error) {
 	var authority tunnelAuthority
 	if len(encoded) == 0 || len(encoded) > 1<<20 || json.Unmarshal(encoded, &authority) != nil ||
 		authority.Password == "" || authority.Method != "aes-256-cfb" || authority.Extension == "" {
-		return tunnelAuthority{}, ErrSchema
+		return tunnelAuthority{}, ErrInvalidAuthority
 	}
 	return authority, nil
 }

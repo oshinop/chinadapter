@@ -10,15 +10,13 @@ import (
 )
 
 const (
-	IOSUserAgent       = "Mozilla/5.0 (iPhone; CPU iPhone OS 6_0 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/6.0 Mobile/10A403 Safari/8536.25 SPEEDIN"
-	IOSOS              = "IOS"
-	IOSEdition         = "THIRD"
-	IOSOSVersion       = "27.0"
-	IOSClientVersion   = "4.18.4"
-	IOSPackageName     = "cc.fancast.major"
-	IOSPromoPlatform   = "AppStore"
-	IOSProviderDevice  = "MAC"
-	IOSProviderVersion = "1.0.46"
+	IOSUserAgent     = "Mozilla/5.0 (iPhone; CPU iPhone OS 6_0 like Mac OS X) AppleWebKit/536.26 (KHTML, like Gecko) Version/6.0 Mobile/10A403 Safari/8536.25 SPEEDIN"
+	IOSOS            = "IOS"
+	IOSEdition       = "THIRD"
+	IOSOSVersion     = "27.0"
+	IOSClientVersion = "4.18.4"
+	IOSPackageName   = "cc.fancast.major"
+	IOSPromoPlatform = "AppStore"
 )
 
 // IOS is the captured iOS 4.18.4 wire profile.
@@ -30,7 +28,7 @@ func (IOS) ConfigFields() any              { return map[string]any{"os": IOSOS} 
 func (IOS) RequiresPostLoginRefresh() bool { return true }
 func (IOS) ValidateLine(provider, _ string) (bool, error) {
 	if provider != "WIFIIN" {
-		return false, ErrInvalidLine
+		return false, nil
 	}
 	return true, nil
 }

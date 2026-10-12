@@ -5,7 +5,7 @@ import (
 	"bytes"
 	"crypto/aes"
 	"crypto/cipher"
-	"crypto/hmac"
+	"crypto/pbkdf2"
 	"crypto/sha1"
 	"encoding/base64"
 	"encoding/json"
@@ -50,8 +50,8 @@ var (
 // Codec is an immutable AES-256-CBC codec for one of the protocol's two
 // fixed compatibility parameter sets.
 type Codec struct {
-	key [32]byte
-	iv  [aes.BlockSize]byte
+	block cipher.Block
+	iv    [aes.BlockSize]byte
 }
 
 // NormalCodec returns the codec used for every ordinary request and response.
@@ -61,17 +61,13 @@ func NormalCodec() Codec { return newCodec(normalMaterial) }
 // authKey field.
 func AuthorityCodec() Codec { return newCodec(authorityMaterial) }
 
-// EncodeRequest encodes an ordinary control-plane JSON body with the normal
-// protocol constants.
-func EncodeRequest(v any) ([]byte, error) { return NormalCodec().EncodeJSON(v) }
-
-// DecodeResponse decodes exactly one ordinary encrypted response JSON value.
-func DecodeResponse(body []byte, out any) error { return NormalCodec().DecodeJSON(body, out) }
-
 func newCodec(material codecMaterial) Codec {
 	var c Codec
-	key := pbkdf2SHA1([]byte(material.password), []byte(material.salt)[:16], 100, len(c.key))
-	copy(c.key[:], key)
+	key, err := pbkdf2.Key(sha1.New, material.password, []byte(material.salt)[:16], 100, 32)
+	if err != nil {
+		panic(err) // the fixed legacy protocol parameters are valid
+	}
+	c.block = aesBlock(key)
 	copy(c.iv[:], material.iv)
 	return c
 }
@@ -95,7 +91,7 @@ func (c Codec) Encode(plain []byte) ([]byte, error) {
 	padded := pkcs7Pad(plain, blockSize)
 	out := make([]byte, base64.StdEncoding.EncodedLen(len(padded)))
 	ciphertext := make([]byte, len(padded))
-	cipher.NewCBCEncrypter(aesBlock(c.key[:]), c.iv[:]).CryptBlocks(ciphertext, padded)
+	cipher.NewCBCEncrypter(c.block, c.iv[:]).CryptBlocks(ciphertext, padded)
 	base64.StdEncoding.Encode(out, ciphertext)
 	return out, nil
 }
@@ -116,7 +112,7 @@ func (c Codec) Decode(body []byte) ([]byte, error) {
 		return nil, ErrMalformedCiphertext
 	}
 	plain := make([]byte, len(ciphertext))
-	cipher.NewCBCDecrypter(aesBlock(c.key[:]), c.iv[:]).CryptBlocks(plain, ciphertext)
+	cipher.NewCBCDecrypter(c.block, c.iv[:]).CryptBlocks(plain, ciphertext)
 	plain, err = pkcs7Unpad(plain, blockSize)
 	if err != nil {
 		return nil, err
@@ -183,33 +179,4 @@ func pkcs7Unpad(in []byte, size int) ([]byte, error) {
 		return nil, ErrInvalidPadding
 	}
 	return in[:len(in)-padding], nil
-}
-
-// pbkdf2SHA1 is PBKDF2-HMAC-SHA1 implemented locally to keep the protocol
-// package dependency-free. It is deliberately limited to this fixed legacy
-// compatibility use; it is not a password-storage primitive.
-func pbkdf2SHA1(password, salt []byte, rounds, length int) []byte {
-	if rounds <= 0 || length <= 0 {
-		return nil
-	}
-	result := make([]byte, 0, length)
-	counter := uint32(1)
-	for len(result) < length {
-		mac := hmac.New(sha1.New, password)
-		_, _ = mac.Write(salt)
-		_, _ = mac.Write([]byte{byte(counter >> 24), byte(counter >> 16), byte(counter >> 8), byte(counter)})
-		u := mac.Sum(nil)
-		t := append([]byte(nil), u...)
-		for i := 1; i < rounds; i++ {
-			mac = hmac.New(sha1.New, password)
-			_, _ = mac.Write(u)
-			u = mac.Sum(nil)
-			for j := range t {
-				t[j] ^= u[j]
-			}
-		}
-		result = append(result, t...)
-		counter++
-	}
-	return result[:length]
 }

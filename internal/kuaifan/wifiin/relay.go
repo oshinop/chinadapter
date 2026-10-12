@@ -8,16 +8,14 @@ import (
 	"sync"
 )
 
-const relayBufferSize = 32 * 1024
-
 type closeWriter interface {
 	CloseWrite() error
 }
 
-// Relay copies both directions with fixed-size buffers. An EOF in one
-// direction causes only a half-close of the peer's write side, allowing the
-// reverse direction to drain. Cancellation or a real copy error closes both
-// sides to unblock the peer copy.
+// Relay copies both directions using the connections' io.Copy fast paths,
+// without allocating buffers those fast paths would ignore. An EOF causes only
+// a half-close of the peer's write side, allowing the reverse direction to
+// drain. Cancellation or a real copy error closes both sides.
 func Relay(ctx context.Context, left, right net.Conn) error {
 	results := make(chan error, 2)
 	var closeOnce sync.Once
@@ -37,8 +35,7 @@ func Relay(ctx context.Context, left, right net.Conn) error {
 	}()
 
 	pump := func(dst, src net.Conn) {
-		buf := make([]byte, relayBufferSize)
-		_, err := io.CopyBuffer(dst, src, buf)
+		_, err := io.Copy(dst, src)
 		if err == nil {
 			if cw, ok := dst.(closeWriter); ok {
 				err = cw.CloseWrite()

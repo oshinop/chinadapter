@@ -16,6 +16,9 @@ import (
 
 const maxUDPDatagramSize = 1<<16 - 1
 
+// ErrInvalidAuthority identifies invalid data-plane tunnel credentials.
+var ErrInvalidAuthority = errors.New("kuaifan: invalid tunnel authority")
+
 // Transport owns the complete WIFIIN data plane for KuaiFan nodes.
 type Transport struct{}
 
@@ -49,7 +52,7 @@ func (*Transport) RelayStream(ctx context.Context, request provider.RelayRequest
 	}
 	tunnel := &cipherConn{
 		Conn: upstream, reader: lazyInbound,
-		writer: &outboundCFBWriter{writer: &cipher.StreamWriter{S: header.Stream, W: upstream}, inbound: lazyInbound, conn: upstream},
+		writer: newOutboundCFBWriter(header.Stream, upstream, lazyInbound),
 	}
 	return wifiin.Relay(ctx, request.Client, tunnel)
 }
@@ -78,9 +81,7 @@ func (*Transport) RelayDatagrams(ctx context.Context, request provider.DatagramR
 	if err != nil {
 		return fmt.Errorf("kuaifan: configure delayed WIFIIN UOT IV: %w", err)
 	}
-	plaintextWriter := &outboundCFBWriter{
-		writer: &cipher.StreamWriter{S: header.Stream, W: upstream}, inbound: lazyInbound, conn: upstream,
-	}
+	plaintextWriter := newOutboundCFBWriter(header.Stream, upstream, lazyInbound)
 	uotWriter, err := wifiin.NewUOTWriter(plaintextWriter)
 	if err != nil {
 		return err
@@ -90,13 +91,22 @@ func (*Transport) RelayDatagrams(ctx context.Context, request provider.DatagramR
 		return err
 	}
 	results := make(chan error, 3)
+	closeAll := func() {
+		_ = request.Packets.Close()
+		_ = upstream.Close()
+		_ = request.Control.Close()
+	}
+	stopCancellation := context.AfterFunc(ctx, closeAll)
+	defer stopCancellation()
 	go func() { results <- watchControl(request.Control) }()
 	go func() { results <- packetsToUOT(request.Packets, uotWriter) }()
 	go func() { results <- uotToPackets(request.Packets, uotReader) }()
 	err = <-results
-	_ = request.Packets.Close()
-	_ = upstream.Close()
-	_ = request.Control.Close()
+	closeAll()
+	// Join every pump after closing its I/O, including the control watcher.
+	for range 2 {
+		<-results
+	}
 	if ctx.Err() != nil {
 		return ctx.Err()
 	}
@@ -107,6 +117,17 @@ func (*Transport) RelayDatagrams(ctx context.Context, request provider.DatagramR
 }
 
 func openWIFIIN(ctx context.Context, dial provider.DialContextFunc, nodeHost string, nodePort uint16, target provider.Target, authority tunnelAuthority, timeout time.Duration, datagrams bool) (net.Conn, *wifiin.OutboundHeader, *wifiin.HandshakeReader, []byte, error) {
+	key := wifiin.DeriveKey(authority.Password)
+	var header *wifiin.OutboundHeader
+	var err error
+	if datagrams {
+		header, err = wifiin.NewUOTOutboundHeader(key[:], nodeHost, nodePort, authority.Extension)
+	} else {
+		header, err = wifiin.NewOutboundHeader(key[:], target.Host, target.Port, authority.Extension)
+	}
+	if err != nil {
+		return nil, nil, nil, nil, fmt.Errorf("kuaifan: build WIFIIN header: %w", err)
+	}
 	dialCtx, cancel := context.WithTimeout(ctx, timeout)
 	upstream, err := dial(dialCtx, "tcp", net.JoinHostPort(nodeHost, strconv.Itoa(int(nodePort))))
 	cancel()
@@ -125,20 +146,12 @@ func openWIFIIN(ctx context.Context, dial provider.DialContextFunc, nodeHost str
 			_ = upstream.Close()
 		}
 	}()
+	stopCancellation := context.AfterFunc(ctx, func() { _ = upstream.Close() })
+	defer stopCancellation()
 	if err := upstream.SetDeadline(time.Now().Add(timeout)); err != nil {
 		return nil, nil, nil, nil, fmt.Errorf("kuaifan: set handshake deadline: %w", err)
 	}
-	keyArray := wifiin.DeriveKey(authority.Password)
-	key := append([]byte(nil), keyArray[:]...)
-	var header *wifiin.OutboundHeader
-	if datagrams {
-		header, err = wifiin.NewUOTOutboundHeader(key, nodeHost, nodePort, authority.Extension)
-	} else {
-		header, err = wifiin.NewOutboundHeader(key, target.Host, target.Port, authority.Extension)
-	}
-	if err == nil {
-		err = writeAll(upstream, header.Packet)
-	}
+	err = writeAll(upstream, header.Packet)
 	handshake := wifiin.NewHandshakeReader(upstream)
 	if err == nil {
 		err = handshake.ReadACK()
@@ -150,7 +163,7 @@ func openWIFIIN(ctx context.Context, dial provider.DialContextFunc, nodeHost str
 		return nil, nil, nil, nil, fmt.Errorf("kuaifan: clear handshake deadline: %w", err)
 	}
 	failed = false
-	return upstream, header, handshake, key, nil
+	return upstream, header, handshake, key[:], nil
 }
 
 func packetsToUOT(packets provider.PacketIO, writer *wifiin.UOTWriter) error {
@@ -161,7 +174,9 @@ func packetsToUOT(packets provider.PacketIO, writer *wifiin.UOTWriter) error {
 			return err
 		}
 		if err := writer.WriteSOCKSDatagram(packets.FlowID(), packet[:n]); err != nil {
-			if errors.Is(err, wifiin.ErrInvalidUDPDatagram) || errors.Is(err, wifiin.ErrFragmentedUDP) || errors.Is(err, wifiin.ErrUnsupportedUDPAddress) {
+			// Design §6: domain, IPv6, malformed, and fragmented datagrams are
+			// discarded one at a time; they never end the association.
+			if errors.Is(err, wifiin.ErrUnsupportedUDPAddress) || errors.Is(err, wifiin.ErrInvalidUDPDatagram) || errors.Is(err, wifiin.ErrFragmentedUDP) {
 				continue
 			}
 			return err
@@ -220,26 +235,44 @@ func (connection *cipherConn) CloseWrite() error {
 }
 
 type outboundCFBWriter struct {
-	writer  io.Writer
+	stream  cipher.Stream
+	scratch []byte
 	inbound *wifiin.LazyInboundReader
 	conn    net.Conn
 }
 
+func newOutboundCFBWriter(stream cipher.Stream, conn net.Conn, inbound *wifiin.LazyInboundReader) *outboundCFBWriter {
+	return &outboundCFBWriter{stream: stream, scratch: make([]byte, 32*1024), inbound: inbound, conn: conn}
+}
+
 func (writer *outboundCFBWriter) Write(buffer []byte) (int, error) {
-	if len(buffer) != 0 {
-		if err := writer.inbound.ArmForOutbound(); err != nil {
-			return 0, err
+	written := 0
+	for len(buffer) != 0 {
+		n := min(len(buffer), len(writer.scratch))
+		ciphertext := writer.scratch[:n]
+		writer.stream.XORKeyStream(ciphertext, buffer[:n])
+		for len(ciphertext) != 0 {
+			count, err := writer.conn.Write(ciphertext)
+			written += count
+			if err != nil {
+				return written, err
+			}
+			if count <= 0 || count > len(ciphertext) {
+				return written, io.ErrShortWrite
+			}
+			ciphertext = ciphertext[count:]
 		}
+		buffer = buffer[n:]
 	}
-	return writer.writer.Write(buffer)
+	return written, nil
 }
 
 func (writer *outboundCFBWriter) CloseWrite() error {
-	if !writer.inbound.OutboundStarted() {
-		return writer.conn.Close()
-	}
 	if closer, ok := writer.conn.(interface{ CloseWrite() error }); ok {
-		return closer.CloseWrite()
+		if err := closer.CloseWrite(); err != nil {
+			return err
+		}
+		return writer.inbound.ArmAfterCloseWrite()
 	}
 	return writer.conn.Close()
 }

@@ -28,7 +28,8 @@ func TestOpenWIFIINClosesUpstreamWhenCancelledAfterDial(t *testing.T) {
 		cancel()
 		return upstream, nil
 	}
-	_, _, _, _, err := openWIFIIN(ctx, dial, "node.example", 8080, provider.Target{}, tunnelAuthority{}, time.Second, false)
+	_, _, _, _, err := openWIFIIN(ctx, dial, "node.example", 8080,
+		provider.Target{Host: "target.example", Port: 443}, tunnelAuthority{Password: "password", Extension: "|token|cc.fancast.major|order|7|MAC|1.0.46"}, time.Second, false)
 	if !errors.Is(err, context.Canceled) {
 		t.Fatalf("openWIFIIN error = %v, want context.Canceled", err)
 	}

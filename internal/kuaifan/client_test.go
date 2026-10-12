@@ -18,6 +18,7 @@ import (
 	"time"
 
 	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
+	"github.com/kfadapter/kfadapter/internal/kuaifan/wifiin"
 )
 
 type roundTripFunc func(*http.Request) (*http.Response, error)
@@ -26,7 +27,7 @@ func (f roundTripFunc) RoundTrip(request *http.Request) (*http.Response, error) 
 
 func encryptedHTTPResponse(t *testing.T, value any) *http.Response {
 	t.Helper()
-	encoded, err := EncodeRequest(value)
+	encoded, err := NormalCodec().EncodeJSON(value)
 	if err != nil {
 		t.Fatalf("encode fake response: %v", err)
 	}
@@ -56,7 +57,7 @@ func TestClientUsesHTTPSAllowlistHeadersAndDistinctTokens(t *testing.T) {
 			t.Fatal(err)
 		}
 		var fields map[string]any
-		if err := DecodeResponse(encoded, &fields); err != nil {
+		if err := NormalCodec().DecodeJSON(encoded, &fields); err != nil {
 			t.Fatalf("decode request: %v", err)
 		}
 		mu.Lock()
@@ -369,7 +370,7 @@ func TestAuthorityRejectsInvalidProviderExtensionFields(t *testing.T) {
 			}
 		})
 	}
-	providerExtension, err := buildProviderExtension("provider-live", "order-live", "7")
+	providerExtension, err := wifiin.ProviderExtensionForProfile("ios", "provider-live", "order-live", "7")
 	if err != nil || providerExtension != "|provider-live|cc.fancast.major|order-live|7|MAC|1.0.46" {
 		t.Fatalf("valid provider extension = %q, %v", providerExtension, err)
 	}

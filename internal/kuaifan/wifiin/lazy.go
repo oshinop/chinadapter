@@ -17,9 +17,9 @@ type ReadDeadlineConn interface {
 }
 
 // LazyInboundReader decrypts the server-to-client WIFIIN stream. The provider
-// may defer its IV until it observes client application ciphertext. Reads may
-// therefore block before the first write without a deadline; ArmForOutbound
-// applies the bounded IV deadline immediately before that first write.
+// may defer its IV while the client is still sending application ciphertext.
+// Only a client write-side half-close bounds that wait; cancellation closes the
+// connection to interrupt an otherwise unbounded read.
 type LazyInboundReader struct {
 	source  *HandshakeReader
 	key     [KeySize]byte
@@ -32,14 +32,12 @@ type LazyInboundReader struct {
 	init    bool
 	initErr error
 
-	outboundStarted bool
-	ivReady         bool
-	deadlineArmed   bool
+	ivReady       bool
+	deadlineArmed bool
 }
 
 // NewLazyInboundReader creates the inbound stream reader. timeout applies only
-// after ArmForOutbound is called, not merely because Relay starts its inbound
-// copy goroutine.
+// after ArmAfterCloseWrite, once the client can send no further application data.
 func NewLazyInboundReader(source *HandshakeReader, key []byte, conn ReadDeadlineConn, timeout time.Duration) (*LazyInboundReader, error) {
 	if source == nil {
 		return nil, errors.New("wifiin: handshake reader is required")
@@ -58,13 +56,11 @@ func NewLazyInboundReader(source *HandshakeReader, key []byte, conn ReadDeadline
 	return lazy, nil
 }
 
-// ArmForOutbound records the first application write and applies a bounded
-// read deadline while the peer supplies its delayed IV. It is safe to call for
-// every Write; only the first non-empty outbound write changes the deadline.
-func (r *LazyInboundReader) ArmForOutbound() error {
+// ArmAfterCloseWrite bounds the delayed IV wait after the client half-closes.
+// Once the IV is available the normal stream is not subject to this deadline.
+func (r *LazyInboundReader) ArmAfterCloseWrite() error {
 	r.mu.Lock()
 	defer r.mu.Unlock()
-	r.outboundStarted = true
 	if r.ivReady || r.deadlineArmed {
 		return nil
 	}
@@ -73,15 +69,6 @@ func (r *LazyInboundReader) ArmForOutbound() error {
 	}
 	r.deadlineArmed = true
 	return nil
-}
-
-// OutboundStarted reports whether application ciphertext has begun. SOCKS
-// uses it to fully close an idle upstream on client half-close, preventing a
-// server-IV reader from leaking indefinitely when no application bytes exist.
-func (r *LazyInboundReader) OutboundStarted() bool {
-	r.mu.Lock()
-	defer r.mu.Unlock()
-	return r.outboundStarted
 }
 
 // Read initializes the receive cipher on its first non-empty read, then

@@ -35,7 +35,7 @@ func (p windowsClientProfile) login(ctx context.Context, c *Client, base *url.UR
 	if *response.Status != 1 && *response.Status != 119 {
 		return LoginSession{}, fmt.Errorf("%w: %d", ErrLoginRejected, *response.Status)
 	}
-	return windowsSessionFromFields(response.Fields, base)
+	return sessionFromFields(response.Fields, base)
 }
 
 func (windowsClientProfile) refresh(ctx context.Context, c *Client, session LoginSession) (LoginSession, error) {
@@ -56,34 +56,11 @@ func (windowsClientProfile) refresh(ctx context.Context, c *Client, session Logi
 	if *response.Status != 1 && *response.Status != 119 {
 		return LoginSession{}, businessStatus(*response.Status)
 	}
-	updated, err := windowsSessionFromFields(response.Fields, session.APIBase)
+	updated, err := sessionFromFields(response.Fields, session.APIBase)
 	if err != nil || updated.UserID != session.UserID {
 		return LoginSession{}, ErrSchema
 	}
 	return updated, nil
-}
-
-func windowsSessionFromFields(fields map[string]json.RawMessage, base *url.URL) (LoginSession, error) {
-	token, err := requiredString(fields, "token")
-	if err != nil {
-		return LoginSession{}, err
-	}
-	userID, err := requiredPositiveInt32(fields, "userId")
-	if err != nil {
-		return LoginSession{}, err
-	}
-	isVIP, err := requiredBool(fields, "isVip")
-	if err != nil {
-		return LoginSession{}, err
-	}
-	vipEndsAt, err := requiredUnixMilli(fields, "vipEndTime")
-	if err != nil || isVIP && vipEndsAt.IsZero() {
-		return LoginSession{}, ErrSchema
-	}
-	return LoginSession{
-		UserID: userID, Token: token, APIBase: cloneURL(base),
-		Profile: AccountProfile{IsVIP: isVIP, VIPEndsAt: vipEndsAt},
-	}, nil
 }
 
 func (windowsClientProfile) fetchAuthority(ctx context.Context, c *Client, session LoginSession) (Authority, error) {

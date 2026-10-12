@@ -37,6 +37,7 @@ type DriverConfig struct {
 }
 
 // Driver owns one QuickFox account token and its complete native-relay catalog.
+// Login and Refresh publish only user IDs representable by native uint32 tunnels.
 type Driver struct {
 	client   *Client
 	lifetime time.Duration
@@ -209,6 +210,10 @@ type linePool struct {
 }
 
 func (driver *Driver) snapshot(stored storedSession, catalog catalog) (provider.Snapshot, error) {
+	// Native tunnel authentication encodes the user ID in a uint32 field.
+	if stored.UserID > int64(^uint32(0)) || catalog.Profile.UserID > int64(^uint32(0)) {
+		return provider.Snapshot{}, fmt.Errorf("%w: user ID exceeds uint32 maximum", ErrSchema)
+	}
 	now := driver.clock().UTC()
 	account, err := catalog.Profile.account(driver.client.location, now)
 	if err != nil || account.UserID != strconv.FormatInt(stored.UserID, 10) {

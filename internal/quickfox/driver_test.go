@@ -253,7 +253,7 @@ func decryptRequestPayload(t *testing.T, body io.Reader) map[string]any {
 	if err != nil {
 		t.Fatal(err)
 	}
-	plaintext, err := decryptCBC(ciphertext, []byte(requestKey))
+	plaintext, err := decryptCBC(ciphertext, []byte(requestKey), make([]byte, len(ciphertext)))
 	if err != nil {
 		t.Fatal(err)
 	}

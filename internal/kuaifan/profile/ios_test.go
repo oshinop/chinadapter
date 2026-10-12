@@ -77,11 +77,14 @@ func TestIOSVerifyRequiresLowercaseSHA1Shape(t *testing.T) {
 
 func TestIOSDefinition(t *testing.T) {
 	t.Parallel()
-	var definition Definition = IOS{}
+	definition := IOS{}
 	if definition.ID() != IOSID || definition.UserAgent() != IOSUserAgent || !definition.RequiresPostLoginRefresh() {
 		t.Fatalf("iOS definition = %#v", definition)
 	}
 	if eligible, err := definition.ValidateLine("WIFIIN", ""); err != nil || !eligible {
 		t.Fatalf("iOS WIFIIN eligibility = %t, %v", eligible, err)
+	}
+	if eligible, err := definition.ValidateLine("FUTURE", ""); err != nil || eligible {
+		t.Fatalf("unknown iOS provider eligibility = %t, %v", eligible, err)
 	}
 }

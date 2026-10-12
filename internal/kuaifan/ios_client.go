@@ -8,6 +8,7 @@ import (
 	"strings"
 
 	wireprofile "github.com/kfadapter/kfadapter/internal/kuaifan/profile"
+	"github.com/kfadapter/kfadapter/internal/kuaifan/wifiin"
 )
 
 type iosClientProfile struct{ wire wireprofile.IOS }
@@ -57,26 +58,11 @@ func (iosClientProfile) refresh(ctx context.Context, c *Client, session LoginSes
 	if *response.Status != 1 {
 		return LoginSession{}, businessStatus(*response.Status)
 	}
-	userID, err := requiredPositiveInt32(response.Fields, "userId")
-	if err != nil || userID != session.UserID {
+	updated, err := sessionFromFields(response.Fields, session.APIBase)
+	if err != nil || updated.UserID != session.UserID {
 		return LoginSession{}, ErrSchema
 	}
-	token, err := requiredString(response.Fields, "token")
-	if err != nil {
-		return LoginSession{}, err
-	}
-	isVIP, err := requiredBool(response.Fields, "isVip")
-	if err != nil {
-		return LoginSession{}, err
-	}
-	vipEndsAt, err := requiredUnixMilli(response.Fields, "vipEndTime")
-	if err != nil || isVIP && vipEndsAt.IsZero() {
-		return LoginSession{}, ErrSchema
-	}
-	return LoginSession{
-		UserID: userID, Token: token, APIBase: cloneURL(session.APIBase),
-		Profile: AccountProfile{IsVIP: isVIP, VIPEndsAt: vipEndsAt},
-	}, nil
+	return updated, nil
 }
 
 func (iosClientProfile) fetchAuthority(ctx context.Context, c *Client, session LoginSession) (Authority, error) {
@@ -114,9 +100,9 @@ func (iosClientProfile) fetchAuthority(ctx context.Context, c *Client, session L
 		return Authority{}, ErrUnsupportedCipher
 	}
 	userIDText := formatUserID(authorityUserID)
-	providerExtension, err := buildProviderExtension(providerToken, decrypted.OrderID, userIDText)
+	providerExtension, err := wifiin.ProviderExtensionForProfile(string(wireprofile.IOSID), providerToken, decrypted.OrderID, userIDText)
 	if err != nil {
-		return Authority{}, err
+		return Authority{}, ErrSchema
 	}
 	return Authority{
 		UserID: userIDText, OrderID: decrypted.OrderID, EncryptKey: decrypted.EncryptKey,

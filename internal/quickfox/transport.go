@@ -21,10 +21,15 @@ const (
 	controlACKSize  = 14
 )
 
+// ErrHandshake reports a rejected or incomplete native relay handshake.
+var ErrHandshake = errors.New("quickfox: relay handshake failed")
+
 type lookupNetIPFunc func(context.Context, string, string) ([]netip.Addr, error)
 
-// Transport implements the observed QuickFox native framed TCP relay. The
-// provider's UDP framing remains unavailable because it has not been verified.
+// Transport implements the observed QuickFox native framed TCP relay for IPv4
+// destinations. It validates the 14-byte zero control acknowledgement before
+// opening the data connection. The provider's UDP framing remains unavailable
+// because it has not been verified.
 type Transport struct {
 	clock  func() time.Time
 	lookup lookupNetIPFunc
@@ -68,7 +73,12 @@ func (transport *Transport) RelayStream(ctx context.Context, request provider.Re
 	}
 	var acknowledgement [controlACKSize]byte
 	if _, err := io.ReadFull(control, acknowledgement[:]); err != nil {
-		return fmt.Errorf("quickfox: read control acknowledgement: %w", err)
+		return fmt.Errorf("%w: read control acknowledgement: %w", ErrHandshake, err)
+	}
+	// The existing transport fixture acknowledges with exactly 14 zero bytes;
+	// no individual field semantics have been established.
+	if acknowledgement != [controlACKSize]byte{} {
+		return fmt.Errorf("%w: invalid control acknowledgement", ErrHandshake)
 	}
 	if err := control.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("quickfox: clear control deadline: %w", err)
@@ -106,12 +116,16 @@ func (transport *Transport) resolveTarget(ctx context.Context, host string, time
 		if address.Is4() {
 			return address, nil
 		}
-		return netip.Addr{}, errors.New("quickfox: IPv6 targets are unsupported")
+		return netip.Addr{}, fmt.Errorf("quickfox: IPv6 targets are unsupported: %w", provider.ErrAddressUnsupported)
 	}
 	resolveContext, cancel := context.WithTimeout(ctx, timeout)
 	defer cancel()
 	addresses, err := transport.lookup(resolveContext, "ip4", host)
 	if err != nil {
+		var dnsErr *net.DNSError
+		if errors.As(err, &dnsErr) && dnsErr.IsNotFound {
+			return netip.Addr{}, fmt.Errorf("quickfox: target has no IPv4 address: %w: %w", provider.ErrAddressUnsupported, err)
+		}
 		return netip.Addr{}, fmt.Errorf("quickfox: resolve target: %w", err)
 	}
 	for _, address := range addresses {
@@ -119,7 +133,7 @@ func (transport *Transport) resolveTarget(ctx context.Context, host string, time
 			return address, nil
 		}
 	}
-	return netip.Addr{}, errors.New("quickfox: target has no IPv4 address")
+	return netip.Addr{}, fmt.Errorf("quickfox: target has no IPv4 address: %w", provider.ErrAddressUnsupported)
 }
 
 func dialRelay(ctx context.Context, dial provider.DialContextFunc, host string, port uint16, timeout time.Duration) (net.Conn, error) {

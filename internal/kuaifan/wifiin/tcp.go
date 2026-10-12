@@ -35,12 +35,6 @@ var (
 	ErrTruncatedACK        = errors.New("wifiin: truncated server acknowledgement")
 )
 
-// ProviderExtension builds the exact sensitive extension expected by the
-// verified iOS WIFIIN TCP header. Callers must treat its result as secret.
-func ProviderExtension(providerToken, orderID, userID string) (string, error) {
-	return ProviderExtensionForProfile("ios", providerToken, orderID, userID)
-}
-
 // ProviderExtensionForProfile builds the profile-specific WIFIIN extension.
 func ProviderExtensionForProfile(profile, providerToken, orderID, userID string) (string, error) {
 	for _, field := range []string{providerToken, orderID, userID} {

@@ -31,17 +31,6 @@ var (
 	ErrInvalidLine        = errors.New("control profile: invalid line")
 )
 
-// Definition exposes the immutable request identity shared with the control
-// transport. Profile-specific login field types remain concrete so callers can
-// clear their transient password immediately after encoding.
-type Definition interface {
-	ID() ID
-	UserAgent() string
-	ConfigFields() any
-	RequiresPostLoginRefresh() bool
-	ValidateLine(provider, password string) (eligible bool, err error)
-}
-
 // LoginInput is the transient account input used to build either client schema.
 type LoginInput struct {
 	Account        string

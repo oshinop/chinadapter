@@ -37,7 +37,7 @@ func (Windows) ValidateLine(provider, password string) (bool, error) {
 	case "WS":
 		return false, nil
 	default:
-		return false, ErrInvalidLine
+		return false, nil
 	}
 }
 

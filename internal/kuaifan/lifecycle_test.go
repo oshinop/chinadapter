@@ -130,7 +130,7 @@ func TestKuaifanPartialRefreshRetainsRotatedTokens(t *testing.T) {
 				return nil, err
 			}
 			var fields map[string]any
-			if err := DecodeResponse(encoded, &fields); err != nil {
+			if err := NormalCodec().DecodeJSON(encoded, &fields); err != nil {
 				return nil, err
 			}
 			profile := "ios"
