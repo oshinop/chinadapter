@@ -8,7 +8,7 @@ export function LoadingCard() {
             <CardHeader>
                 <h1 className="flex items-center gap-2.5 font-sans text-lg font-semibold uppercase tracking-[0.05em]">
                     <LoaderCircle className="size-5 animate-spin text-primary" />
-                    Opening kfadapter
+                    Opening chinadapter
                 </h1>
                 <CardDescription>Checking console access.</CardDescription>
             </CardHeader>

@@ -14,8 +14,8 @@ import (
 
 	"golang.org/x/crypto/argon2"
 
-	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/provider"
+	credentialspkg "github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 const maxRuntimeNodes = 4096

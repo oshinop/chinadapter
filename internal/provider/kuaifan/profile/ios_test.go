@@ -34,7 +34,7 @@ func TestIOSLoginFieldsMatchCapturedProfile(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	deviceDigest := sha1.Sum([]byte("kfadapter-kuaifan-device\x00" + installationID))
+	deviceDigest := sha1.Sum([]byte("chinadapter-kuaifan-device\x00" + installationID))
 	deviceID := hex.EncodeToString(deviceDigest[:])
 	if fields.DeviceID != deviceID || fields.OpenUDID != deviceID || fields.UUID != installationID || fields.UDID != "" || fields.IDFA != "" || fields.IMEI != "" {
 		t.Fatalf("unexpected synthetic identifiers: %#v", fields)

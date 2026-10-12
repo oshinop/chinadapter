@@ -1,4 +1,4 @@
-# Paths are fixed relative to /kfadapter: configuration is ./config.yaml and
+# Paths are fixed relative to /chinadapter: configuration is ./config.yaml and
 # persistent SQLite data is ./data. Provider requests use https://ws.kuaifan.co.
 
 # Shared numeric listener address for management and SOCKS. Production host

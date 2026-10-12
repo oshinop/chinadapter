@@ -169,7 +169,7 @@ function StatusConsole({
                 <header className="border-b border-dashed border-border pb-5">
                     <div className="flex flex-wrap items-baseline justify-between gap-x-4 gap-y-1">
                         <p className="glow font-sans text-sm font-bold uppercase tracking-[0.34em] text-primary">
-                            Kfadapter
+                            Chinadapter
                         </p>
                         <p className="hidden text-[0.625rem] uppercase tracking-[0.24em] text-muted-foreground sm:block">
                             Local control plane · v{status.version}

@@ -28,7 +28,7 @@ func (a *API) diagnostics(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
-	w.Header().Set("Content-Disposition", "attachment; filename=\"kfadapter-diagnostics.json\"")
+	w.Header().Set("Content-Disposition", "attachment; filename=\"chinadapter-diagnostics.json\"")
 	w.Header().Set("Content-Length", fmt.Sprint(len(encoded)))
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write(encoded)

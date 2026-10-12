@@ -12,8 +12,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/provider"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 func TestV8FixtureMigrationPreservesProvidersAndSessions(t *testing.T) {

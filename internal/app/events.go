@@ -5,7 +5,7 @@ import (
 	"errors"
 	"sync"
 
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 const (

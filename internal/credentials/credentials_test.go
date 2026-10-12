@@ -8,7 +8,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
@@ -23,7 +23,7 @@ func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
 		_, _ = m.Write([]byte(message))
 		return m.Sum(nil)
 	}
-	instance := reference(hash, "kfadapter/instance/v3\x00"+installation)
+	instance := reference(hash, "chinadapter/instance/v3\x00"+installation)
 	route := provider.Route{Provider: "kuaifan", Protocol: "kuaifan-wifiin", Host: "Node.Example.", Port: 11000}
 	key, err := provider.NodeKey(route)
 	if err != nil {
@@ -36,7 +36,7 @@ func TestIdentityDerivationAndStrictUUIDPath(t *testing.T) {
 	if !ok {
 		t.Fatal("missing credentials")
 	}
-	expected := reference(instance, "kfadapter/socks-user/v3\x00"+key)
+	expected := reference(instance, "chinadapter/socks-user/v3\x00"+key)
 	if credentials.Username != "n_"+base64.RawURLEncoding.EncodeToString(expected[:12]) {
 		t.Fatal("incorrect username derivation")
 	}

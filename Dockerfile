@@ -21,17 +21,17 @@ ARG VERSION=devel
 RUN CGO_ENABLED=0 go build \
     -trimpath \
     -ldflags="-s -w -X main.version=$VERSION" \
-    -o /kfadapter \
-    ./cmd/kfadapter
+    -o /chinadapter \
+    ./cmd/chinadapter
 
 FROM alpine:3.23@sha256:85fe1e81d6758c208f3e1eed4338a1997e19d4be002d4dd32d3100c9a8c010a0
 RUN apk add --no-cache ca-certificates tzdata \
-    && mkdir -p /kfadapter/data \
-    && chown -R 65532:65532 /kfadapter \
-    && chmod 0700 /kfadapter/data
-WORKDIR /kfadapter
+    && mkdir -p /chinadapter/data \
+    && chown -R 65532:65532 /chinadapter \
+    && chmod 0700 /chinadapter/data
+WORKDIR /chinadapter
 ARG VERSION=devel
 LABEL org.opencontainers.image.version="$VERSION"
-COPY --from=builder --chown=65532:65532 /kfadapter ./kfadapter
+COPY --from=builder --chown=65532:65532 /chinadapter ./chinadapter
 USER 65532:65532
-ENTRYPOINT ["./kfadapter"]
+ENTRYPOINT ["./chinadapter"]

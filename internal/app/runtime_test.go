@@ -9,7 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 func TestRuntimeAccessLoginRejectsInvalidToken(t *testing.T) {

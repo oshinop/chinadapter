@@ -5,9 +5,9 @@ import (
 	"errors"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/accounts"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/accounts"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 const udpMode = "provider_transport"

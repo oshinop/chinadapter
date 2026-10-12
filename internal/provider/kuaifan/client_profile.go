@@ -5,7 +5,7 @@ import (
 	"encoding/json"
 	"net/url"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 // EmailLogin is transient account input. InstallationID is protected random

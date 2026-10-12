@@ -14,8 +14,8 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 func TestRelayDatagramsDelayedIVAndCancellation(t *testing.T) {

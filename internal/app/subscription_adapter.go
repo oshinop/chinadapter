@@ -4,9 +4,9 @@ import (
 	"context"
 	"net/http"
 
-	"github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/subscription"
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/subscription"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 // NewSubscriptionAdapter exposes the immutable subscription catalog to web.

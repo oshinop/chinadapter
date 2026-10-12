@@ -10,8 +10,8 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 const (

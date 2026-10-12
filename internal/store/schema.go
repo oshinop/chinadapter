@@ -5,7 +5,7 @@ import (
 	"database/sql"
 	"strings"
 
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 var sqliteSchemaTables = map[string]int{

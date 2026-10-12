@@ -8,9 +8,9 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 // Probe measures only one bounded direct TCP connection to the selected

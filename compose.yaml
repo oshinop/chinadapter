@@ -1,22 +1,22 @@
-name: kfadapter
+name: chinadapter
 
 services:
-  kfadapter:
-    image: ghcr.io/oshinop/kfadapter:latest
+  chinadapter:
+    image: ghcr.io/oshinop/chinadapter:latest
     network_mode: host
     user: "65532:65532"
-    working_dir: /kfadapter
+    working_dir: /chinadapter
     init: true
     read_only: true
     restart: unless-stopped
     stop_grace_period: 30s
     environment:
-      TZ: "${KFADAPTER_TZ:-Asia/Shanghai}"
+      TZ: "${CHINADAPTER_TZ:-Asia/Shanghai}"
     volumes:
-      - db_data:/kfadapter/data
+      - db_data:/chinadapter/data
       - type: bind
         source: ./config.yaml
-        target: /kfadapter/config.yaml
+        target: /chinadapter/config.yaml
         read_only: true
         bind:
           create_host_path: false
@@ -34,7 +34,7 @@ services:
         soft: 65536
         hard: 65536
     healthcheck:
-      test: ["CMD", "./kfadapter", "healthcheck"]
+      test: ["CMD", "./chinadapter", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

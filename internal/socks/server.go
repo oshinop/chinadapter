@@ -13,9 +13,9 @@ import (
 
 	"github.com/cenkalti/backoff/v5"
 
-	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
+	credentialspkg "github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 const (

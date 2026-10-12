@@ -11,7 +11,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 func TestDriverLoginRejectsUserIDAboveUint32Maximum(t *testing.T) {

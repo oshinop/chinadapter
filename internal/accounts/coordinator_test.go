@@ -1,7 +1,7 @@
 package accounts
 
 import (
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/state"
 	"testing"
 )
 

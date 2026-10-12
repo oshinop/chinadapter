@@ -1,4 +1,4 @@
-module github.com/kfadapter/kfadapter
+module github.com/oshinop/chinadapter
 
 go 1.26.0
 

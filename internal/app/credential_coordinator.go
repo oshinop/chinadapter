@@ -4,8 +4,8 @@ import (
 	"errors"
 	"sync/atomic"
 
-	"github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 // CredentialApplier atomically replaces the live username lookup map in SOCKS.

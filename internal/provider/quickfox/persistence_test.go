@@ -6,10 +6,10 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
-	storepkg "github.com/kfadapter/kfadapter/internal/store"
-	"github.com/kfadapter/kfadapter/internal/subscription"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
+	storepkg "github.com/oshinop/chinadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/subscription"
 )
 
 func TestQuickFoxSnapshotSurvivesSQLiteRestart(t *testing.T) {

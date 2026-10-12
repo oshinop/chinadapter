@@ -26,7 +26,7 @@ func (a *API) writeProblem(w http.ResponseWriter, status int, code, title string
 		Code   string `json:"code"`
 		Status int    `json:"status"`
 		Title  string `json:"title"`
-	}{Type: "urn:kfadapter:problem:" + code, Code: code, Status: status, Title: title})
+	}{Type: "urn:chinadapter:problem:" + code, Code: code, Status: status, Title: title})
 }
 
 func (a *API) writeBodyError(w http.ResponseWriter, err error) {

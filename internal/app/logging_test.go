@@ -5,7 +5,7 @@ import (
 	"strings"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 // Refresh failures are logged by class only; provider text must never reach the log.

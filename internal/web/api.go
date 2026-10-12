@@ -13,7 +13,7 @@ import (
 	"sync"
 	"time"
 
-	adapterconfig "github.com/kfadapter/kfadapter/internal/config"
+	adapterconfig "github.com/oshinop/chinadapter/internal/config"
 )
 
 // Config defines the HTTP listener and optional DNS hostname accepted by the

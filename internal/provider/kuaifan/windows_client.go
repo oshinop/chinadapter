@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strconv"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 type windowsClientProfile struct{ wire wireprofile.Windows }

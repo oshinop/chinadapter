@@ -12,10 +12,10 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kfadapter/kfadapter/internal/config"
-	"github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/config"
+	"github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 const (

@@ -1,8 +1,8 @@
-# kfadapter
+# chinadapter
 
-kfadapter turns your VPN provider accounts into one SOCKS5 proxy you can run at home.
+chinadapter brings you back into China through the China-based VPN services you already pay for. It turns those accounts into one SOCKS5 proxy you can run at home.
 
-Sign in to your accounts once in its web console, and kfadapter keeps the sessions alive, gathers every node they offer, and publishes them as a single subscription link. Point your proxy client or router at that link and every node shows up, ready to use.
+Sign in to your accounts once in its web console, and chinadapter keeps the sessions alive, gathers every node they offer, and publishes them as a single subscription link. Point your proxy client or router at that link and every node shows up, ready to use.
 
 It is meant for a home server or router: a small container that keeps working in the background, without you having to log in again or copy new links whenever something changes.
 
@@ -15,7 +15,7 @@ It is meant for a home server or router: a small container that keeps working in
 
 ## Getting started
 
-kfadapter runs with Docker Compose on a Linux machine.
+chinadapter runs with Docker Compose on a Linux machine.
 
 1. Download [`compose.yaml`](compose.yaml) and [`config.yaml`](config.yaml) into a folder, and adjust `config.yaml` if you want different ports or a hostname.
 2. Start it with `docker compose up -d`.
@@ -27,7 +27,7 @@ The Go backend lives in `cmd/` and `internal/`, and the web console in `web/`. S
 
 ## Disclaimer
 
-kfadapter is an unofficial project and is not affiliated with any VPN provider. Use it only with accounts you own.
+chinadapter is an unofficial project and is not affiliated with any VPN provider. Use it only with accounts you own.
 
 ## License
 

@@ -17,14 +17,14 @@ import (
 	"testing"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/accounts"
-	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/socks"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/store"
-	"github.com/kfadapter/kfadapter/internal/subscription"
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/accounts"
+	credentialspkg "github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/socks"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/subscription"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 const stableToken = "correct horse battery token"

@@ -10,7 +10,7 @@ import (
 	"errors"
 	"strings"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 var ErrInvalidKey = errors.New("invalid installation identity key")
@@ -36,10 +36,10 @@ func New(derivedHash []byte, installationID string) (*Identity, error) {
 	if len(derivedHash) != sha256.Size {
 		return nil, ErrInvalidKey
 	}
-	result.key = mac(derivedHash, "kfadapter/instance/v3\x00"+installationID)
+	result.key = mac(derivedHash, "chinadapter/instance/v3\x00"+installationID)
 	result.initialized = true
-	result.subscriptionID = uuid(mac(result.key[:], "kfadapter/subscription/v3"))
-	result.password = uuid(mac(result.key[:], "kfadapter/socks-password/v3"))
+	result.subscriptionID = uuid(mac(result.key[:], "chinadapter/subscription/v3"))
+	result.password = uuid(mac(result.key[:], "chinadapter/socks-password/v3"))
 	return result, nil
 }
 
@@ -66,7 +66,7 @@ func (identity *Identity) Credentials(route provider.Route) (Credentials, bool) 
 	if err != nil {
 		return Credentials{}, false
 	}
-	digest := mac(identity.key[:], "kfadapter/socks-user/v3\x00"+key)
+	digest := mac(identity.key[:], "chinadapter/socks-user/v3\x00"+key)
 	return Credentials{Username: "n_" + base64.RawURLEncoding.EncodeToString(digest[:12]), Password: identity.password}, true
 }
 

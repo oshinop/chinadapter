@@ -9,7 +9,7 @@ import (
 	"fmt"
 	"time"
 
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 // RestoreBrowserSessions restores hashed cookie identities and expiry.

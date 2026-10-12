@@ -7,7 +7,7 @@ import (
 	"net/url"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 // AccountProfile is the account metadata validated by user/refresh.do.

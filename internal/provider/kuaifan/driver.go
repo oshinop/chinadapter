@@ -7,8 +7,8 @@ import (
 	"fmt"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	"github.com/oshinop/chinadapter/internal/provider"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 const (

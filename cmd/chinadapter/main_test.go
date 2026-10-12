@@ -70,7 +70,7 @@ func TestServeRejectsBareProcessAtSeam(t *testing.T) {
 func TestRunRejectsUnknownAndExtraServeArguments(t *testing.T) {
 	for _, args := range [][]string{{"unknown"}, {"-x"}, {"serve", "extra"}} {
 		var stdout, stderr bytes.Buffer
-		if code := run(args, &stdout, &stderr); code != 2 || !strings.HasPrefix(stderr.String(), "usage: kfadapter ") {
+		if code := run(args, &stdout, &stderr); code != 2 || !strings.HasPrefix(stderr.String(), "usage: chinadapter ") {
 			t.Fatalf("args=%v code=%d stderr=%q", args, code, stderr.String())
 		}
 	}

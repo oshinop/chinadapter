@@ -10,8 +10,8 @@ import (
 	"sync"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
 )
 
 // CoordinatorConfig wires provider drivers to generic state publication.

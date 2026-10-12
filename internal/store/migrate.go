@@ -6,7 +6,7 @@ import (
 	"errors"
 	"time"
 
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 func migrateSQLiteSchema(ctx context.Context, db *sql.DB) error {

@@ -12,7 +12,7 @@ import (
 )
 
 const (
-	sessionCookieName = "kfadapter_session"
+	sessionCookieName = "chinadapter_session"
 	defaultJSONLimit  = 64 << 10
 	accessTokenLimit  = 4 << 10
 )

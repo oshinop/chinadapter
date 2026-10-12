@@ -7,7 +7,7 @@ import (
 	"net"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 func TestOutboundCFBWriterContinuousCipherAndShortWrites(t *testing.T) {

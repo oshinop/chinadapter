@@ -14,7 +14,7 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/credentials"
 )
 
 const (

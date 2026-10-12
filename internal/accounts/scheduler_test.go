@@ -12,11 +12,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	credentialspkg "github.com/kfadapter/kfadapter/internal/credentials"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/store"
-	"github.com/kfadapter/kfadapter/internal/subscription"
+	credentialspkg "github.com/oshinop/chinadapter/internal/credentials"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/subscription"
 )
 
 type fakeClock struct {

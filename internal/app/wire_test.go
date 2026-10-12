@@ -13,11 +13,11 @@ import (
 	"testing/synctest"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/config"
-	"github.com/kfadapter/kfadapter/internal/lifecycle"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/config"
+	"github.com/oshinop/chinadapter/internal/lifecycle"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/store"
 )
 
 func TestValidateListenInterfaceAddresses(t *testing.T) {

@@ -8,7 +8,7 @@ export function AuthCardShell({ children }: { children: ReactNode }) {
                 <div className="mb-5 flex items-end justify-between gap-4 px-1">
                     <div>
                         <p className="glow font-sans text-lg font-bold uppercase tracking-[0.34em] text-primary">
-                            Kfadapter
+                            Chinadapter
                         </p>
                         <p className="mt-1 text-[0.625rem] uppercase tracking-[0.24em] text-muted-foreground">
                             Local control plane

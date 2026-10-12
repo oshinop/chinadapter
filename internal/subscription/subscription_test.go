@@ -4,7 +4,7 @@ import (
 	"os"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/store"
 )
 
 func TestSubscriptionMetadataHasNoFetchProof(t *testing.T) {

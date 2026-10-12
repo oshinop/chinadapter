@@ -1,4 +1,4 @@
-// kfadapter is the container-only local multi-provider SOCKS adapter runtime.
+// chinadapter is the container-only local multi-provider SOCKS adapter runtime.
 package main
 
 import (
@@ -11,15 +11,15 @@ import (
 	"strings"
 	"syscall"
 
-	"github.com/kfadapter/kfadapter/internal/app"
-	"github.com/kfadapter/kfadapter/internal/lifecycle"
+	"github.com/oshinop/chinadapter/internal/app"
+	"github.com/oshinop/chinadapter/internal/lifecycle"
 )
 
 const (
 	configPath     = "./config.yaml"
 	stateDirectory = "./data"
 )
-const usageLine = "usage: kfadapter [serve|healthcheck|version|validate-config]"
+const usageLine = "usage: chinadapter [serve|healthcheck|version|validate-config]"
 
 // version is overwritten by Docker's -ldflags at build time.
 var version = "devel"
@@ -35,7 +35,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	if len(arguments) == 0 {
 		if err := serve(nil); err != nil {
 			slog.Error("service stopped", "err", err)
-			fmt.Fprintln(stderr, "kfadapter: service stopped")
+			fmt.Fprintln(stderr, "chinadapter: service stopped")
 			return 1
 		}
 		return 0
@@ -47,7 +47,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		}
 		if err := serve(nil); err != nil {
 			slog.Error("service stopped", "err", err)
-			fmt.Fprintln(stderr, "kfadapter: service stopped")
+			fmt.Fprintln(stderr, "chinadapter: service stopped")
 			return 1
 		}
 		return 0
@@ -59,7 +59,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	switch arguments[0] {
 	case "healthcheck":
 		if err := healthcheck(arguments[1:]); err != nil {
-			fmt.Fprintln(stderr, "kfadapter: healthcheck failed")
+			fmt.Fprintln(stderr, "chinadapter: healthcheck failed")
 			return 1
 		}
 		return 0
@@ -69,7 +69,7 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 	case "validate-config":
 		if err := validateConfig(arguments[1:]); err != nil {
 			slog.Error("invalid configuration", "err", err)
-			fmt.Fprintln(stderr, "kfadapter: invalid configuration")
+			fmt.Fprintln(stderr, "chinadapter: invalid configuration")
 			return 1
 		}
 		fmt.Fprintln(stdout, "configuration valid")

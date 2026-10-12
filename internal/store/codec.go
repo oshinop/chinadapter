@@ -8,8 +8,8 @@ import (
 	"sort"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/provider"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 func replacePersistentStateTx(ctx context.Context, tx *sql.Tx, state domain.PersistentState) error {

@@ -10,8 +10,8 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 const maxUDPDatagramSize = 1<<16 - 1

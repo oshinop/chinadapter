@@ -5,8 +5,8 @@ import (
 	"encoding/json"
 	"errors"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	"github.com/oshinop/chinadapter/internal/provider"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 func (driver *Driver) loginBoth(ctx context.Context, input EmailLogin) ([2]LoginSession, error) {

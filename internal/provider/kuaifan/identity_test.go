@@ -3,8 +3,8 @@ package kuaifan
 import (
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	"github.com/oshinop/chinadapter/internal/provider"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 func TestNodeIDCanonicalPayloadAndLabelIndependence(t *testing.T) {

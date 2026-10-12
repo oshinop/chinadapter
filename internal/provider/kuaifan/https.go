@@ -14,7 +14,7 @@ import (
 	"strings"
 	"time"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 func hardenedHTTPClient() *http.Client {

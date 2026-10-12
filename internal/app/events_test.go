@@ -5,7 +5,7 @@ import (
 	"testing"
 	"testing/synctest"
 
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 func TestEventSubscriptionCancelStopsBackgroundWatcher(t *testing.T) {

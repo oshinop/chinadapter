@@ -1,6 +1,6 @@
 # Optional external consumer syntax example.
 #
-# kfadapter serves the installation-bound subscription URL only. The consumer fetches
+# chinadapter serves the installation-bound subscription URL only. The consumer fetches
 # it according to its own configuration; no consumer service is part of this
 # deployment.
 #
@@ -18,17 +18,17 @@ global {
 }
 
 subscription {
-    kfadapter: 'http-file://127.0.0.1:10809/sub/<36-char-uuid>'
+    chinadapter: 'http-file://127.0.0.1:10809/sub/<36-char-uuid>'
 }
 
 group {
-    kfadapter_nodes {
-        filter: subtag(kfadapter)
+    chinadapter_nodes {
+        filter: subtag(chinadapter)
         policy: min_moving_avg
     }
 }
 
 routing {
     dip(geoip:private) -> direct
-    fallback: kfadapter_nodes
+    fallback: chinadapter_nodes
 }

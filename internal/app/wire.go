@@ -15,17 +15,17 @@ import (
 	"time"
 	_ "time/tzdata"
 
-	"github.com/kfadapter/kfadapter/internal/accounts"
-	"github.com/kfadapter/kfadapter/internal/config"
-	"github.com/kfadapter/kfadapter/internal/lifecycle"
-	"github.com/kfadapter/kfadapter/internal/provider"
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan"
-	"github.com/kfadapter/kfadapter/internal/provider/quickfox"
-	"github.com/kfadapter/kfadapter/internal/socks"
-	"github.com/kfadapter/kfadapter/internal/state"
-	"github.com/kfadapter/kfadapter/internal/store"
-	"github.com/kfadapter/kfadapter/internal/subscription"
-	"github.com/kfadapter/kfadapter/internal/web"
+	"github.com/oshinop/chinadapter/internal/accounts"
+	"github.com/oshinop/chinadapter/internal/config"
+	"github.com/oshinop/chinadapter/internal/lifecycle"
+	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan"
+	"github.com/oshinop/chinadapter/internal/provider/quickfox"
+	"github.com/oshinop/chinadapter/internal/socks"
+	"github.com/oshinop/chinadapter/internal/state"
+	"github.com/oshinop/chinadapter/internal/store"
+	"github.com/oshinop/chinadapter/internal/subscription"
+	"github.com/oshinop/chinadapter/internal/web"
 )
 
 // Daemon owns the wired services, listeners, and process lifecycle workers.
@@ -260,7 +260,7 @@ func (d *Daemon) Run(ctx context.Context) (result error) {
 		return err
 	}
 	if d.startupLog != nil {
-		_, _ = fmt.Fprintf(d.startupLog, "kfadapter: ready management=%s proxy=%s\n", d.managementEndpoint, d.proxyEndpoint)
+		_, _ = fmt.Fprintf(d.startupLog, "chinadapter: ready management=%s proxy=%s\n", d.managementEndpoint, d.proxyEndpoint)
 	}
 	return supervisor.Run(ctx)
 }

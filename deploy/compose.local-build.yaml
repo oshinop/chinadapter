@@ -1,10 +1,10 @@
 # Developer-only Compose project: builds the image locally instead of pulling
-# ghcr.io/oshinop/kfadapter:latest like the production compose.yaml.
-name: kfadapter-local
+# ghcr.io/oshinop/chinadapter:latest like the production compose.yaml.
+name: chinadapter-local
 
 services:
-  kfadapter:
-    image: "${KFADAPTER_LOCAL_IMAGE:-kfadapter:local}"
+  chinadapter:
+    image: "${CHINADAPTER_LOCAL_IMAGE:-chinadapter:local}"
     build:
       context: ..
       dockerfile: Dockerfile
@@ -14,18 +14,18 @@ services:
       - "10809:10809"
       - "10808:10808"
     user: "65532:65532"
-    working_dir: /kfadapter
+    working_dir: /chinadapter
     init: true
     read_only: true
     restart: unless-stopped
     stop_grace_period: 30s
     environment:
-      TZ: "${KFADAPTER_TZ:-Asia/Shanghai}"
+      TZ: "${CHINADAPTER_TZ:-Asia/Shanghai}"
     volumes:
-      - db_data:/kfadapter/data
+      - db_data:/chinadapter/data
       - type: bind
         source: ../config.yaml
-        target: /kfadapter/config.yaml
+        target: /chinadapter/config.yaml
         read_only: true
         bind:
           create_host_path: false
@@ -43,7 +43,7 @@ services:
         soft: 65536
         hard: 65536
     healthcheck:
-      test: ["CMD", "./kfadapter", "healthcheck"]
+      test: ["CMD", "./chinadapter", "healthcheck"]
       interval: 30s
       timeout: 5s
       retries: 3

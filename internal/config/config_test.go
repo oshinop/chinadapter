@@ -124,7 +124,7 @@ func TestLoadRejectsInvalidListeners(t *testing.T) {
 }
 
 func TestLoadValidatesOptionalHostname(t *testing.T) {
-	for _, hostname := range []string{"localhost", "kfadapter", "adapter.example.com", "KF-Adapter.Example"} {
+	for _, hostname := range []string{"localhost", "chinadapter", "adapter.example.com", "KF-Adapter.Example"} {
 		t.Run("valid/"+hostname, func(t *testing.T) {
 			body := replaceConfigLine(t, validConfig, "hostname: adapter.example.com\n", "hostname: "+hostname+"\n")
 			if _, err := Load(writeConfig(t, body)); err != nil {

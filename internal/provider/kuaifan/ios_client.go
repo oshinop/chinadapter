@@ -7,8 +7,8 @@ import (
 	"net/url"
 	"strings"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
-	"github.com/kfadapter/kfadapter/internal/provider/kuaifan/wifiin"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
+	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 type iosClientProfile struct{ wire wireprofile.IOS }

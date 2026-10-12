@@ -4,7 +4,7 @@ import (
 	"context"
 	"errors"
 
-	"github.com/kfadapter/kfadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider"
 )
 
 type completeProfile struct {

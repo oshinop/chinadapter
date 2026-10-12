@@ -1,4 +1,4 @@
-# kfadapter design
+# chinadapter design
 
 **Audience:** Implementers, security reviewers, and operators  
 **Scope:** A provider-extensible containerized local SOCKS5 adapter, browser control plane, and stable installation-bound subscription service; the registered providers are KuaiFan and QuickFox.
@@ -82,13 +82,13 @@ statuses; it is not an independently edited transition graph:
 
 ```text
 instanceKey = HMAC-SHA256(AccessTokenVerifier.derivedHash,
-                        "kfadapter/instance/v3\x00" || InstallationID)
-subscriptionID = UUIDv8(HMAC-SHA256(instanceKey, "kfadapter/subscription/v3")[:16])
-socksPassword = UUIDv8(HMAC-SHA256(instanceKey, "kfadapter/socks-password/v3")[:16])
+                        "chinadapter/instance/v3\x00" || InstallationID)
+subscriptionID = UUIDv8(HMAC-SHA256(instanceKey, "chinadapter/subscription/v3")[:16])
+socksPassword = UUIDv8(HMAC-SHA256(instanceKey, "chinadapter/socks-password/v3")[:16])
 nodeKey = provider || "\x00" || protocol || "\x00" || canonicalHost || "\x00" || decimalPort
 nodeID = provider || "_" || base64url(SHA256(nodeKey)[:12])
 socksUsername = "n_" || base64url(HMAC-SHA256(instanceKey,
-                    "kfadapter/socks-user/v3\x00" || nodeKey)[:12])
+                    "chinadapter/socks-user/v3\x00" || nodeKey)[:12])
 ```
 
 UUID construction uses the first 16 digest bytes, sets the version nibble to 8 and the RFC 9562 variant bits to `10`, and formats a lowercase canonical 36-character UUID. There is no usable installation key before token setup, so subscription and SOCKS authentication are unavailable. All nodes share the instance password; a node's username depends only on its transport route. Neither current transport consumes any further per-node routing fields: KuaiFan dials `NodeHost:NodePort` and decodes handshake material from opaque authority; QuickFox resolves `NodeHost`, dials `NodePort`, and builds its native prefaces from opaque authority and the requested destination. Model, weight, auto, group/region/line labels and catalog IDs are not transport routing inputs. Authority identity is checked separately when pinning a tunnel.
@@ -111,7 +111,7 @@ Each linked provider owns a `github.com/cenkalti/backoff/v5` exponential delay c
 
 `internal/accounts`, `internal/state`, `internal/store`, `internal/credentials`, `internal/subscription`, `internal/app`, `internal/web`, and `internal/socks` validate and route generic provider data only. They neither decode provider refresh state nor interpret authority bytes. A node references an authority in its own provider snapshot with the same protocol, and route-derived node IDs are globally unique. Schema v9 persists the normalized catalog but never derived usernames or rendered bodies.
 
-`internal/app/wire.go` is the daemon composition root: `app.NewDaemon` constructs state, providers, accounts, SOCKS, web, and lifecycle workers, and `(*app.Daemon).Run(ctx)` supervises their lifetime. `cmd/kfadapter` owns only CLI dispatch, signal setup, the build-injected `main.version`, the health check, and configuration validation. `internal/web` has no concrete internal-service imports; its concrete subscription adapter lives in `internal/app/subscription_adapter.go`. Strict subscription-path parsing is injected through the web-owned `SubscriptionService` interface and delegates to `internal/credentials.ParseSubscriptionPath` without duplicating the parser.
+`internal/app/wire.go` is the daemon composition root: `app.NewDaemon` constructs state, providers, accounts, SOCKS, web, and lifecycle workers, and `(*app.Daemon).Run(ctx)` supervises their lifetime. `cmd/chinadapter` owns only CLI dispatch, signal setup, the build-injected `main.version`, the health check, and configuration validation. `internal/web` has no concrete internal-service imports; its concrete subscription adapter lives in `internal/app/subscription_adapter.go`. Strict subscription-path parsing is injected through the web-owned `SubscriptionService` interface and delegates to `internal/credentials.ParseSubscriptionPath` without duplicating the parser.
 
 Provider node IDs use the common `nodeKey` and SHA-256 construction above, prefixed by the provider ID. Hosts are canonical IP addresses or lowercase IDNA DNS names without a trailing dot. Protocols separate distinct transports at the same endpoint. Repeated routes collapse even when group, region, pool, or line labels differ; iOS remains preferred over Windows when KuaiFan profiles expose the same route.
 
@@ -216,7 +216,7 @@ Management admits the configured numeric Host, same-family numeric Hosts for a w
 
 This intentionally does not inspect `RemoteAddr`, which identifies the client, or guess among LAN, WAN, VPN, and container interfaces. A LAN request therefore advertises the LAN IP it used; a public or upstream-NAT request advertises its public Host; and a VPN request advertises its VPN Host. Public forwarding must preserve the configured management and proxy ports, because there is no reliable way for the daemon to infer different external mappings. A proxy or gateway must preserve the original Host. State-changing API requests use standard-library cross-origin protection; event streams retain an exact same-origin Origin requirement.
 
-The process working directory is fixed at `/kfadapter`; configuration is always loaded from `./config.yaml`, and SQLite state is always stored under `./data`. Provider API origins are fixed by their protocol implementations. None of these paths or origins is configurable.
+The process working directory is fixed at `/chinadapter`; configuration is always loaded from `./config.yaml`, and SQLite state is always stored under `./data`. Provider API origins are fixed by their protocol implementations. None of these paths or origins is configurable.
 
 `/healthz` is the only unauthenticated operational endpoint; it returns a fixed non-cacheable success while the daemon is live and discloses no account, node, subscription, or upstream state.
 
@@ -230,13 +230,13 @@ network_mode: host
 
 The developer Compose file remains portable across Docker Desktop and Linux by using bridge networking with host-loopback port mappings.
 
-There is one project service: `kfadapter`. Both Compose configurations declare only the bare logical named volume `db_data:` and mount it as `db_data:/kfadapter/data`, never as a parent-directory mount. The container executable is `/kfadapter/kfadapter` and its database path is `/kfadapter/data/state.db`. Production retains the Compose project name `kfadapter`, so Docker Engine names the managed volume `kfadapter_db_data`; developer Compose retains `kfadapter-local`, producing `kfadapter-local_db_data`. Neither Compose volume has `external` or `name` attributes. The image supplies an empty `0700`, UID `65532:65532` `/kfadapter/data` directory, so normal copy-up initializes a newly created volume. Retaining a volume preserves `state.db` and the locally durable provider and browser sessions across container recreation.
+There is one project service: `chinadapter`. Both Compose configurations declare only the bare logical named volume `db_data:` and mount it as `db_data:/chinadapter/data`, never as a parent-directory mount. The container executable is `/chinadapter/chinadapter` and its database path is `/chinadapter/data/state.db`. Production retains the Compose project name `chinadapter`, so Docker Engine names the managed volume `chinadapter_db_data`; developer Compose retains `chinadapter-local`, producing `chinadapter-local_db_data`. Neither Compose volume has `external` or `name` attributes. The image supplies an empty `0700`, UID `65532:65532` `/chinadapter/data` directory, so normal copy-up initializes a newly created volume. Retaining a volume preserves `state.db` and the locally durable provider and browser sessions across container recreation.
 
 Both volumes are Compose-managed. `docker compose down -v` removes the active project's `db_data` volume and therefore its `state.db` and persisted sessions; plain `docker compose down` and force recreation retain it. First run needs no volume bootstrap: `docker compose up -d` creates the volume and copy-up initializes its protected state directory. Both Compose configurations mount the configuration read-only with `bind.create_host_path: false`, so a missing host `config.yaml` fails instead of being silently created as a directory. They run as numeric UID/GID `65532:65532`, use a read-only root filesystem, drop all capabilities, set `no-new-privileges`, bound resources and logs, and provide a size-limited `tmpfs` for `/tmp`.
 
-The image working directory is `/kfadapter`; the service runs `./kfadapter`, loads `./config.yaml`, and stores SQLite at `./data/state.db`.
+The image working directory is `/chinadapter`; the service runs `./chinadapter`, loads `./config.yaml`, and stores SQLite at `./data/state.db`.
 
-Production Compose runs `ghcr.io/oshinop/kfadapter:latest`. The Dockerfile builds the frontend in a digest-pinned `node:24-alpine` stage and the Go binary in a digest-pinned `golang:1.26.5-alpine` stage, then runs the result from digest-pinned `alpine:3.23`. `.github/workflows/ci.yml` runs frontend tests, Go vet and race tests, lint, govulncheck, Compose validation, and an image smoke test. Publishing to `ghcr.io` runs only after those pass: `latest` from `main`, and version tags from `v*`. The state directory remains owned by numeric UID/GID `65532:65532`.
+Production Compose runs `ghcr.io/oshinop/chinadapter:latest`. The Dockerfile builds the frontend in a digest-pinned `node:24-alpine` stage and the Go binary in a digest-pinned `golang:1.26.5-alpine` stage, then runs the result from digest-pinned `alpine:3.23`. `.github/workflows/ci.yml` runs frontend tests, Go vet and race tests, lint, govulncheck, Compose validation, and an image smoke test. Publishing to `ghcr.io` runs only after those pass: `latest` from `main`, and version tags from `v*`. The state directory remains owned by numeric UID/GID `65532:65532`.
 
 The image and service do not require a privileged bind, Docker socket, host PID namespace, host `/sys`, host home directory, browser profile, or external-consumer state. A configuration or startup failure must stop the daemon rather than widen its bind or quietly select another address.
 
@@ -254,7 +254,7 @@ On termination, the daemon stops accepting new browser and SOCKS work, cancels r
 
 ### 4.4 State operations
 
-Deployment and upgrades use Compose alone: `docker compose up -d` starts the service, and `docker compose pull && docker compose up -d` upgrades it. Compose creates the managed `kfadapter_db_data` volume on first run, and `state.db` persists in it across upgrades and container recreation. The volume's mountpoint must be a `0700` directory owned by the runtime identity and either empty or containing exactly one regular, single-link `0600` `state.db`; the store refuses anything else.
+Deployment and upgrades use Compose alone: `docker compose up -d` starts the service, and `docker compose pull && docker compose up -d` upgrades it. Compose creates the managed `chinadapter_db_data` volume on first run, and `state.db` persists in it across upgrades and container recreation. The volume's mountpoint must be a `0700` directory owned by the runtime identity and either empty or containing exactly one regular, single-link `0600` `state.db`; the store refuses anything else.
 
 ## 5. Local browser access and API
 
@@ -360,7 +360,7 @@ Focused verification must cover observable behavior, including:
 7. A stability table checks URL, rendered credentials and node-details credentials across logout/login, account swaps, provider add/remove, store reopen and label-only refresh. Only access-token change rotates them; the old URL receives an empty `404`, the old SOCKS password is rejected, and the new URL/password and replacement browser session work.
 8. Strict UUIDv8 paths return the exact Base64 body; malformed and revoked paths return the empty not-found contract. Saturation precedes path validation. Fifty concurrent subscriptions across three Host headers each render their own authority without a data race, database write or request-global mutation.
 9. SOCKS authenticates the selector, rejects unsupported commands, dispatches eligible `CONNECT` requests through the selected KuaiFan WIFIIN or QuickFox native TCP transport, relays KuaiFan IPv4 `UDP ASSOCIATE` through the observed WIFIIN UOT transport, discards fragmented and unsupported-address UDP datagrams, preserves pre-admission pin checks, and never remaps an admitted flow.
-10. Production and developer Compose declare the managed logical `db_data` volume, mounted at `/kfadapter/data`, with no external or custom-name override. Under the fixed `kfadapter` production project it resolves to `kfadapter_db_data`; under `kfadapter-local` it resolves to `kfadapter-local_db_data`. Both preserve `state.db` across container recreation while remaining non-root and read-only outside documented writable mounts. `docker compose down -v` deletes that project's managed volume and its persisted provider and browser sessions; plain `down` does not.
+10. Production and developer Compose declare the managed logical `db_data` volume, mounted at `/chinadapter/data`, with no external or custom-name override. Under the fixed `chinadapter` production project it resolves to `chinadapter_db_data`; under `chinadapter-local` it resolves to `chinadapter-local_db_data`. Both preserve `state.db` across container recreation while remaining non-root and read-only outside documented writable mounts. `docker compose down -v` deletes that project's managed volume and its persisted provider and browser sessions; plain `down` does not.
 11. The real v8 fixture migrates to exact schema v9 with both provider accounts, refresh state and authorities retained, route IDs and exclusions remapped, browser cookie hashes matching the original raw tokens, and no re-login. Store tests cover context cancellation, read-only Load, busy errors, oldest-first session eviction and verifier-change revocation.
 12. Release gates are clean `gofmt -l cmd internal`, `go vet ./...`, `golangci-lint run ./...`, `go test -race -count=1 ./...`, and `npm ci && npm run build && npm test` in `web`.
 

@@ -9,7 +9,7 @@ import (
 	"strings"
 	"syscall"
 
-	domain "github.com/kfadapter/kfadapter/internal/state"
+	domain "github.com/oshinop/chinadapter/internal/state"
 )
 
 // ValidateStateDir requires a real, current-user-owned 0700 directory.

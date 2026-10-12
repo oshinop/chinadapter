@@ -3,7 +3,7 @@ package main
 import (
 	"errors"
 
-	"github.com/kfadapter/kfadapter/internal/config"
+	"github.com/oshinop/chinadapter/internal/config"
 )
 
 func loadConfig(arguments []string) (config.Config, error) {

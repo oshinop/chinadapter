@@ -51,7 +51,7 @@ func TestUnknownPathsReturnTypedProblem(t *testing.T) {
 		if err := json.NewDecoder(response.Body).Decode(&problem); err != nil {
 			t.Fatal(err)
 		}
-		if problem.Type != "urn:kfadapter:problem:not_found" || problem.Code != "not_found" {
+		if problem.Type != "urn:chinadapter:problem:not_found" || problem.Code != "not_found" {
 			t.Fatalf("problem=%+v", problem)
 		}
 	}

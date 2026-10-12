@@ -13,7 +13,7 @@ import (
 	"testing"
 	"time"
 
-	wireprofile "github.com/kfadapter/kfadapter/internal/provider/kuaifan/profile"
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 func TestWindowsLineValidationRetainsUnsupportedWSAsIneligible(t *testing.T) {
