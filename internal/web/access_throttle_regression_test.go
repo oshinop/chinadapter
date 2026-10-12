@@ -1,6 +1,7 @@
 package web
 
 import (
+	"fmt"
 	"testing"
 	"time"
 )
@@ -34,5 +35,40 @@ func TestNonCountedAccessOutcomeDoesNotResetFailureWindow(t *testing.T) {
 	}
 	if got, _ := store.beginAccess(client); got != accessRateLimited {
 		t.Fatalf("admission after five counted failures = %v, want rate limited", got)
+	}
+}
+
+func TestClientIdentityGroupsIPv6By64(t *testing.T) {
+	if clientIdentity("[2001:db8:1:2::1]:42") != clientIdentity("[2001:db8:1:2:abcd::2]:43") {
+		t.Fatal("IPv6 /64 budget was split")
+	}
+	if clientIdentity("[2001:db8:1:2::1]:42") == clientIdentity("[2001:db8:1:3::1]:42") {
+		t.Fatal("distinct IPv6 /64 budgets merged")
+	}
+}
+
+func TestAccessTableEvictsOldestUnblockedEntry(t *testing.T) {
+	now := time.Now()
+	store, err := newSessionStore(func() time.Time { return now }, nil, time.Hour, 8, nil)
+	if err != nil {
+		t.Fatal(err)
+	}
+	for index := range 1024 {
+		store.accessAttempts[fmt.Sprint(index)] = accessAttempt{createdAt: now.Add(time.Duration(index) * time.Second), windowEnd: now.Add(time.Hour)}
+	}
+	blocked := store.accessAttempts["0"]
+	blocked.blockedTo = now.Add(time.Hour)
+	store.accessAttempts["0"] = blocked
+	if admission, _ := store.beginAccess("new"); admission != accessAdmitted {
+		t.Fatalf("new client admission = %v", admission)
+	}
+	if _, exists := store.accessAttempts["1"]; exists {
+		t.Fatal("oldest unblocked entry was not evicted")
+	}
+	if _, exists := store.accessAttempts["0"]; !exists {
+		t.Fatal("blocked entry was evicted")
+	}
+	if len(store.accessAttempts) != 1024 {
+		t.Fatalf("table size = %d", len(store.accessAttempts))
 	}
 }

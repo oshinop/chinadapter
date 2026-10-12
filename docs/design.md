@@ -65,6 +65,19 @@ The store requires a non-symlinked, current-UID-owned `0700` directory and a reg
 
 `AccessTokenVerifier` persists Argon2id salt, parameters, and a 32-byte derived hash. The supplied access token is trimmed, validated, used transiently for setup or login, and never written to state, logs, browser storage, or diagnostics. Provider login accounts and passwords are likewise transient. Each validated provider snapshot deliberately persists its canonical user ID, opaque refresh state, opaque tunnel authorities, redacted account summary, nodes, and `ExpiresAt` inside the protected database so daemon or container recreation does not force another provider login. `ExpiresAt` is only a staleness hint, not a deletion deadline or tunnel-admission condition. Each linked provider has its own refresh supervisor: the normal due time is the earlier of last success plus the refresh policy and `ExpiresAt` minus a 30-minute safety margin. Startup refreshes stale snapshots immediately without deleting them, and each one-minute tick rechecks the wall clock so suspension cannot skip work. Transient failures preserve the last-good snapshot and retry indefinitely with exponential backoff from one minute to a 30-minute maximum and ±20% jitter (clamped to that maximum). Explicit upstream `ErrSessionRejected` marks only that provider `needs_relogin`, retains its nodes and authority, and suspends automatic attempts until a manual refresh or login succeeds. If token rotation succeeds but the catalog fails, the coordinator durably merges only the returned `RefreshState` into the previous snapshot before returning the error.
 
+The externally visible service state is derived from the aggregate provider
+statuses; it is not an independently edited transition graph:
+
+| State | Entry condition | Exit | Runtime side effect |
+|---|---|---|---|
+| `signed_out` | No provider has a usable persisted session, or access authority is not initialized | A successful login begins `authenticating` | Clear active provider authority and reject new tunnel admissions |
+| `authenticating` | A login operation is admitted and provider credentials are being verified | Login publishes a complete aggregate (`ready`), or fails back to `signed_out`/the previous usable state | Do not publish partial provider snapshots |
+| `syncing` | A refresh or replacement login is rebuilding the aggregate | Complete publication yields `ready`; a failed refresh yields `degraded` when another usable aggregate remains | Existing complete snapshot remains pinned while network I/O runs |
+| `ready` | Every required provider status is OK and a complete aggregate has eligible nodes | Provider refresh failure (`degraded`), logout (`signed_out`) | Admit new SOCKS flows and expose node details |
+| `degraded` | At least one provider refresh fails while another usable aggregate remains | All providers recover (`ready`), logout (`signed_out`) | Keep the last complete aggregate; surface per-provider failure |
+| `expired` | Not entered. Snapshots are never expired by time; the value is kept for API and frontend compatibility | Login begins (`authenticating`) or logout (`signed_out`) | None while unreachable |
+| `error` | No usable aggregate remains after an operation or publication error | Login begins (`authenticating`) or logout (`signed_out`) | Keep process liveness but reject control/data operations that require a session |
+
 `internal/identity` calculates the installation key and the two domain-separated UUIDs:
 
 ```text

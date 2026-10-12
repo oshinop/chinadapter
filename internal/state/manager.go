@@ -289,42 +289,6 @@ func (m *Manager) finish(lease uint64, operation Operation, outcome Outcome) {
 	}
 }
 
-// Transition moves between explicit lifecycle states while retaining operation
-// serialization. It is useful to expose the authenticating -> syncing phase.
-func (m *Manager) Transition(next ServiceState) error {
-	if m == nil {
-		return ErrInvalidTransition
-	}
-	m.mu.Lock()
-	defer m.mu.Unlock()
-	if !validTransition(m.state, next) {
-		return fmt.Errorf("%w: %s -> %s", ErrInvalidTransition, m.state, next)
-	}
-	m.state = next
-	return nil
-}
-
-func validTransition(from, to ServiceState) bool {
-	switch from {
-	case StateSignedOut:
-		return to == StateAuthenticating
-	case StateAuthenticating:
-		return to == StateSyncing || to == StateReady || to == StateSignedOut || to == StateError
-	case StateSyncing:
-		return to == StateReady || to == StateDegraded || to == StateExpired || to == StateError || to == StateSignedOut
-	case StateReady:
-		return to == StateSyncing || to == StateDegraded || to == StateExpired || to == StateSignedOut
-	case StateDegraded:
-		return to == StateSyncing || to == StateReady || to == StateExpired || to == StateSignedOut || to == StateError
-	case StateExpired:
-		return to == StateAuthenticating || to == StateSignedOut
-	case StateError:
-		return to == StateAuthenticating || to == StateSignedOut
-	default:
-		return false
-	}
-}
-
 // Commit publishes a complete provider snapshot after the durable commit.
 func (m *Manager) Commit(snapshot *RuntimeSnapshot) error {
 	if m == nil || snapshot == nil {
@@ -386,9 +350,6 @@ func (m *Manager) signOutLocked() {
 	}
 	m.state = StateSignedOut
 }
-
-// MarkDegraded preserves the current complete generation after a refresh error.
-func (m *Manager) MarkDegraded() error { return m.Transition(StateDegraded) }
 
 // SessionUsable reports whether a validated aggregate retains provider
 // accounts. Elapsed time alone never invalidates stored session authority.

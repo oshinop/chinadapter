@@ -13,6 +13,7 @@ import (
 	"mime"
 	"net"
 	"net/http"
+	"net/netip"
 	"net/url"
 	"strconv"
 	"strings"
@@ -38,6 +39,7 @@ type accessAttempt struct {
 	windowEnd time.Time
 	blockedTo time.Time
 	inFlight  bool
+	createdAt time.Time
 }
 
 type accessAdmission uint8
@@ -107,10 +109,20 @@ func newSessionStore(now func() time.Time, random io.Reader, ttl time.Duration, 
 		return store, nil
 	}
 	restoredAt := now().UTC()
+	var discarded [][]byte
 	if err := persistence.RestoreBrowserSessions(context.Background(), restoredAt, max, func(tokenHash []byte, csrf string, expiresAt time.Time) error {
+		if expiresAt.After(restoredAt.Add(ttl)) {
+			discarded = append(discarded, append([]byte(nil), tokenHash...))
+			return nil
+		}
 		return store.restore(restoredAt, string(tokenHash), csrf, expiresAt)
 	}); err != nil {
 		return nil, err
+	}
+	for _, tokenHash := range discarded {
+		if err := persistence.DeleteBrowserSession(context.Background(), tokenHash); err != nil {
+			return nil, err
+		}
 	}
 	return store, nil
 }
@@ -298,7 +310,7 @@ func (s *sessionStore) beginAccess(client string) (accessAdmission, time.Duratio
 	s.trimAccessAttemptsLocked()
 	now := s.now()
 	attempt, tracked := s.accessAttempts[client]
-	if !tracked && len(s.accessAttempts) >= 1024 {
+	if !tracked && len(s.accessAttempts) >= 1024 && !s.evictAccessAttemptLocked(now) {
 		return accessRateLimited, time.Second
 	}
 	if attempt.inFlight {
@@ -309,6 +321,9 @@ func (s *sessionStore) beginAccess(client string) (accessAdmission, time.Duratio
 	}
 	if !attempt.windowEnd.IsZero() && !now.Before(attempt.windowEnd) {
 		attempt = accessAttempt{}
+	}
+	if !tracked || attempt.createdAt.IsZero() {
+		attempt.createdAt = now
 	}
 	attempt.inFlight = true
 	s.accessAttempts[client] = attempt
@@ -457,18 +472,26 @@ func (s *sessionStore) trimAccessAttemptsLocked() {
 			delete(s.accessAttempts, client)
 		}
 	}
-	if len(s.accessAttempts) <= 1024 {
-		return
-	}
+}
+
+// Evict the oldest idle, unblocked source; never erase an active verifier or a
+// penalty window to admit a new client.
+func (s *sessionStore) evictAccessAttemptLocked(now time.Time) bool {
+	var oldest string
+	var createdAt time.Time
 	for client, attempt := range s.accessAttempts {
-		if attempt.inFlight {
+		if attempt.inFlight || now.Before(attempt.blockedTo) {
 			continue
 		}
-		delete(s.accessAttempts, client)
-		if len(s.accessAttempts) <= 1024 {
-			return
+		if oldest == "" || attempt.createdAt.Before(createdAt) {
+			oldest, createdAt = client, attempt.createdAt
 		}
 	}
+	if oldest == "" {
+		return false
+	}
+	delete(s.accessAttempts, oldest)
+	return true
 }
 
 func (s *sessionStore) trimLoginAttemptsLocked() {
@@ -519,10 +542,15 @@ func clientIdentity(remoteAddress string) string {
 	if err != nil {
 		host = remoteAddress
 	}
-	if ip := net.ParseIP(host); ip != nil && ip.IsLoopback() {
-		// Every loopback representation shares one access-token budget. Separate
-		// 127/8 and ::1 keys would let the same local process bypass throttling.
-		return "loopback"
+	if ip, err := netip.ParseAddr(host); err == nil {
+		ip = ip.Unmap()
+		if ip.IsLoopback() {
+			return "loopback"
+		}
+		if ip.Is6() {
+			return netip.PrefixFrom(ip.WithZone(""), 64).Masked().String()
+		}
+		return ip.String()
 	}
 	if host == "" {
 		return "unknown"

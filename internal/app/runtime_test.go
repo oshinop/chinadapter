@@ -1,28 +1,97 @@
 package app
 
 import (
-	"bytes"
+	"context"
+	"errors"
+	"net"
+	"strings"
 	"testing"
 
-	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/state"
 )
 
-func TestCredentialCoordinatorInstallsLiveOnlyMap(t *testing.T) {
-	authority, err := identity.New(bytes.Repeat([]byte{1}, 32), "00112233445566778899aabbccddeeff")
+func TestRuntimeAccessLoginRejectsInvalidToken(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not used") })
+	if err := fixture.runtime.AccessLogin(t.Context(), "wrong local token"); err == nil {
+		t.Fatal("invalid access token was accepted")
+	} else {
+		var public interface{ HTTPStatus() int }
+		if !errors.As(err, &public) || public.HTTPStatus() != 401 {
+			t.Fatalf("invalid token error=%v", err)
+		}
+	}
+}
+
+func TestRuntimeNodeDetailsRejectsStaleSelectorAuthority(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not used") })
+	current := fixture.manager.Current()
+	next := current.Clone()
+	next.Generation++
+	next.Selectors = map[string]state.NodeRef{}
+	if err := fixture.manager.Commit(next); err != nil {
+		t.Fatal(err)
+	}
+	if _, err := fixture.runtime.NodeDetails(t.Context(), current.Nodes[0].ID); err == nil || !strings.Contains(err.Error(), "selector authority") {
+		t.Fatalf("stale selector error=%v", err)
+	}
+}
+
+func TestRuntimeCommitRejectsInvalidSnapshotWithoutChangingAggregate(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not used") })
+	before := fixture.manager.Current().Clone()
+	if err := fixture.runtime.CommitControlSnapshotLocked(&state.RuntimeSnapshot{Generation: before.Generation + 1}); err == nil {
+		t.Fatal("invalid snapshot committed")
+	}
+	after := fixture.manager.Current()
+	if after.Generation != before.Generation || len(after.Nodes) != len(before.Nodes) || len(after.Providers) != len(before.Providers) {
+		t.Fatalf("aggregate changed after rejected commit: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRuntimeProbePublishesCurrentNodeHealth(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) {
+		left, right := net.Pipe()
+		_ = right.Close()
+		return left, nil
+	})
+	result, err := fixture.runtime.Probe(t.Context(), "alpha-node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	coordinator, err := NewCredentialCoordinator(nil, authority)
+	if result.NodeID != "alpha-node" || result.Health != string(state.NodeHealthHealthy) {
+		t.Fatalf("probe result=%+v", result)
+	}
+	if node, ok := fixture.manager.Current().NodeByID("alpha-node"); !ok || node.Health != state.NodeHealthHealthy {
+		t.Fatalf("node health=%+v ok=%v", node, ok)
+	}
+}
+
+func TestRuntimeAccountSelectorAuthorityRemainsStableOnRefresh(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, errors.New("not used") })
+	before, err := fixture.runtime.NodeDetails(t.Context(), "alpha-node")
 	if err != nil {
 		t.Fatal(err)
 	}
-	nodes := []state.Node{{ID: "kuaifan_node", Provider: "kuaifan", Protocol: "wifiin", Host: "127.0.0.1", Port: 80}}
-	refs, err := coordinator.Build(nodes)
-	if err != nil || len(refs) != 1 {
-		t.Fatalf("refs count = %d, %v", len(refs), err)
+	if err := fixture.runtime.Refresh(t.Context(), "alpha"); err != nil {
+		t.Fatal(err)
 	}
-	if refs, err := coordinator.Build(nil); err != nil || len(refs) != 0 {
-		t.Fatal("absent nodes remained in the live credential map")
+	after, err := fixture.runtime.NodeDetails(t.Context(), "alpha-node")
+	if err != nil {
+		t.Fatal(err)
+	}
+	if before.SocksUsername != after.SocksUsername || before.SocksPassword != after.SocksPassword {
+		t.Fatalf("selector credentials changed: before=%+v after=%+v", before, after)
+	}
+}
+
+func TestRuntimeProblemErrorsKeepPublicClassifications(t *testing.T) {
+	fixture := newRuntimeFixture(t, func(context.Context, string, string) (net.Conn, error) { return nil, context.DeadlineExceeded })
+	_, err := fixture.runtime.Probe(t.Context(), "missing")
+	var public interface {
+		Code() string
+		HTTPStatus() int
+	}
+	if !errors.As(err, &public) || public.Code() != "node_not_found" || public.HTTPStatus() != 404 {
+		t.Fatalf("problem=%v", err)
 	}
 }

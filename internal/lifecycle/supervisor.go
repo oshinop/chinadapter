@@ -83,31 +83,21 @@ func (s *Supervisor) Run(parent context.Context) error {
 
 	drainCtx, drainCancel := context.WithTimeout(context.WithoutCancel(parent), s.drainTimeout)
 	defer drainCancel()
-	var shutdown sync.WaitGroup
 	for index := len(s.workers) - 1; index >= 0; index-- {
-		if s.workers[index].Shutdown == nil {
+		worker := s.workers[index]
+		if worker.Shutdown == nil {
 			continue
 		}
-		worker := s.workers[index]
-		shutdown.Add(1)
-		go func() {
-			defer shutdown.Done()
-			_ = worker.Shutdown(drainCtx)
-		}()
-	}
-	shutdownDone := make(chan struct{})
-	go func() {
-		shutdown.Wait()
-		close(shutdownDone)
-	}()
-	select {
-	case <-shutdownDone:
-	case <-drainCtx.Done():
-		if cause == nil || errors.Is(cause, context.Canceled) {
-			cause = fmt.Errorf("shutdown exceeded %s", s.drainTimeout)
+		if err := worker.Shutdown(drainCtx); err != nil && cause == nil {
+			cause = fmt.Errorf("shutdown worker %s: %w", worker.Name, err)
+		}
+		if drainCtx.Err() != nil {
+			if cause == nil || errors.Is(cause, context.Canceled) {
+				cause = fmt.Errorf("shutdown exceeded %s", s.drainTimeout)
+			}
+			break
 		}
 	}
-
 	workersDone := make(chan struct{})
 	go func() {
 		running.Wait()

@@ -36,6 +36,7 @@ const (
 	configPath     = "./config.yaml"
 	stateDirectory = "./data"
 )
+const usageLine = "usage: kfadapter [serve|healthcheck|version|validate-config|validate-state]"
 
 // version is overwritten by Docker's -ldflags at build time.
 var version = "devel"
@@ -48,15 +49,29 @@ func main() {
 
 func run(arguments []string, stdout, stderr io.Writer) int {
 	slog.SetDefault(slog.New(slog.NewTextHandler(stderr, nil)))
-	if len(arguments) == 0 || arguments[0] == "serve" || strings.HasPrefix(arguments[0], "-") {
-		if err := serve(commandArgs(arguments)); err != nil {
-			// Startup and supervisor errors are operator-facing and carry no
-			// provider text; refresh failures are logged by class only.
+	if len(arguments) == 0 {
+		if err := serve(nil); err != nil {
 			slog.Error("service stopped", "err", err)
 			fmt.Fprintln(stderr, "kfadapter: service stopped")
 			return 1
 		}
 		return 0
+	}
+	if arguments[0] == "serve" {
+		if len(arguments) != 1 {
+			fmt.Fprintln(stderr, usageLine)
+			return 2
+		}
+		if err := serve(nil); err != nil {
+			slog.Error("service stopped", "err", err)
+			fmt.Fprintln(stderr, "kfadapter: service stopped")
+			return 1
+		}
+		return 0
+	}
+	if strings.HasPrefix(arguments[0], "-") {
+		fmt.Fprintln(stderr, usageLine)
+		return 2
 	}
 	switch arguments[0] {
 	case "healthcheck":
@@ -84,16 +99,9 @@ func run(arguments []string, stdout, stderr io.Writer) int {
 		fmt.Fprintln(stdout, "state valid")
 		return 0
 	default:
-		fmt.Fprintln(stderr, "kfadapter: unknown command")
+		fmt.Fprintln(stderr, usageLine)
 		return 2
 	}
-}
-
-func commandArgs(arguments []string) []string {
-	if len(arguments) > 0 && arguments[0] == "serve" {
-		return arguments[1:]
-	}
-	return arguments
 }
 
 func loadConfig(arguments []string) (config.Config, error) {
@@ -294,6 +302,7 @@ func newAdapterAtStateDirectory(cfg config.Config, stateDirectory string) (resul
 	server, api, err := web.NewHTTPServer(web.Config{
 		Listen: managementAddress, Hostname: cfg.Hostname, SocksListen: proxyAddress,
 		Version: version, StartedAt: startedAt, SessionTTL: cfg.Management.SessionTTL.Value(),
+		ProviderRequestTimeout: cfg.Provider.RequestTimeout.Value(),
 	}, web.Dependencies{Backend: runtimeFacade, Subscriptions: web.NewSubscriptionAdapter(subscriptionService), Sessions: store, Liveness: runtimeFacade})
 	if err != nil {
 		return nil, err
@@ -420,6 +429,7 @@ func (d *adapter) shutdownSOCKS(ctx context.Context) error {
 }
 
 func (d *adapter) runWeb(ctx context.Context) error {
+	d.httpServer.BaseContext = func(net.Listener) context.Context { return ctx }
 	err := d.httpServer.Serve(d.httpListener)
 	if ctx.Err() != nil {
 		return ctx.Err()

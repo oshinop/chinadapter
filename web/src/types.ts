@@ -32,7 +32,7 @@ export interface StatusResponse {
   };
   dataPlane: {
     socksAddress: string;
-    udpMode: "disabled_unverified" | string;
+    udpMode: "provider_transport";
   };
   nodes: {
     total: number;

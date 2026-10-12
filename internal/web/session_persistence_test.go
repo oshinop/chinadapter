@@ -184,7 +184,7 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 		}
 	})
 
-	t.Run("overlong restored row prevents startup", func(t *testing.T) {
+	t.Run("overlong restored row is dropped and deleted", func(t *testing.T) {
 		now := time.Date(2026, time.July, 17, 12, 0, 0, 0, time.UTC)
 		secret := strings.Repeat("A", 43)
 		persistence := &fakeBrowserSessionPersistence{sessions: map[string]persistedBrowserSession{
@@ -193,9 +193,15 @@ func TestBrowserSessionPersistenceFailuresFailClosed(t *testing.T) {
 		config := testConfig()
 		config.Now = func() time.Time { return now }
 		config.SessionTTL = time.Hour
-		_, err := NewAPI(config, Dependencies{Sessions: persistence})
-		if err == nil {
-			t.Fatal("NewAPI succeeded with overlong restored browser session")
+		api, err := NewAPI(config, Dependencies{Sessions: persistence})
+		if err != nil {
+			t.Fatal(err)
+		}
+		if _, ok := api.sessions.valid(context.Background(), secret); ok {
+			t.Fatal("overlong session was restored")
+		}
+		if len(persistence.sessions) != 0 || persistence.deleteCalls != 1 {
+			t.Fatal("overlong session was not deleted durably")
 		}
 	})
 

@@ -111,3 +111,36 @@ func TestNewRejectsInvalidWorkers(t *testing.T) {
 		t.Fatal("expected duplicate rejection")
 	}
 }
+
+func TestShutdownRunsSequentiallyInReverseOrderWithSharedDeadline(t *testing.T) {
+	var order []string
+	var deadline time.Time
+	workers := []Worker{}
+	for _, name := range []string{"first", "second", "third"} {
+		workers = append(workers, Worker{Name: name, Run: func(ctx context.Context) error { <-ctx.Done(); return ctx.Err() }, Shutdown: func(ctx context.Context) error {
+			got, ok := ctx.Deadline()
+			if !ok {
+				t.Error("shutdown lacks deadline")
+			}
+			if deadline.IsZero() {
+				deadline = got
+			} else if !deadline.Equal(got) {
+				t.Error("workers received separate deadlines")
+			}
+			order = append(order, name)
+			return nil
+		}})
+	}
+	supervisor, err := New(workers, time.Second)
+	if err != nil {
+		t.Fatal(err)
+	}
+	ctx, cancel := context.WithCancel(t.Context())
+	cancel()
+	if err := supervisor.Run(ctx); err != nil {
+		t.Fatal(err)
+	}
+	if strings.Join(order, ",") != "third,second,first" {
+		t.Fatalf("shutdown order = %v", order)
+	}
+}

@@ -54,12 +54,13 @@ type Config struct {
 	// ReadTimeout bounds request headers plus JSON body delivery. WriteTimeout
 	// bounds regular responses; SSE refreshes and clears a per-write deadline so
 	// its idle lifetime is not limited by that server-wide bound.
-	ReadTimeout      time.Duration
-	WriteTimeout     time.Duration
-	JSONBodyLimit    int
-	SSEMaxClients    int
-	SSEMaxEventBytes int
-	SSEHeartbeat     time.Duration
+	ReadTimeout  time.Duration
+	WriteTimeout time.Duration
+	// ProviderRequestTimeout is the per-request provider transport budget.
+	ProviderRequestTimeout time.Duration
+	JSONBodyLimit          int
+	SSEMaxEventBytes       int
+	SSEHeartbeat           time.Duration
 }
 
 // BrowserSessionPersistence stores only opaque browser-session and CSRF
@@ -144,7 +145,7 @@ type Status struct {
 
 type Deployment struct {
 	Mode      string    `json:"mode,omitempty"`
-	StartedAt time.Time `json:"startedAt,omitempty"`
+	StartedAt time.Time `json:"startedAt,omitzero"`
 }
 
 type Account struct {
@@ -166,8 +167,8 @@ type LoginInput struct {
 }
 
 type ControlPlaneStatus struct {
-	LastRefreshAt time.Time `json:"lastRefreshAt,omitempty"`
-	NextRefreshAt time.Time `json:"nextRefreshAt,omitempty"`
+	LastRefreshAt time.Time `json:"lastRefreshAt,omitzero"`
+	NextRefreshAt time.Time `json:"nextRefreshAt,omitzero"`
 }
 
 type DataPlaneStatus struct {
@@ -242,8 +243,8 @@ type API struct {
 	socksIP       netip.Addr
 	socksPort     string
 	sessions      *sessionStore
-	sseSlots      chan struct{}
 	accessMu      sync.RWMutex
+	handler       http.Handler
 }
 
 // NewAPI creates the browser handler for the configured listener.
@@ -283,9 +284,6 @@ func NewAPI(config Config, dependencies Dependencies) (*API, error) {
 	} else if config.WriteTimeout < 0 || config.WriteTimeout > 30*time.Second {
 		return nil, errors.New("invalid HTTP write timeout")
 	}
-	if config.SSEMaxClients <= 0 {
-		config.SSEMaxClients = 8
-	}
 	if config.SSEMaxEventBytes <= 0 {
 		config.SSEMaxEventBytes = 4 << 10
 	}
@@ -304,50 +302,45 @@ func NewAPI(config Config, dependencies Dependencies) (*API, error) {
 	if err != nil {
 		return nil, fmt.Errorf("restore browser sessions: %w", err)
 	}
-	return &API{
+	api := &API{
 		config: config, backend: dependencies.Backend, subscriptions: dependencies.Subscriptions,
 		liveness: dependencies.Liveness, listenIP: listenIP, listenPort: listenPort, hostname: config.Hostname,
 		socksIP: socksIP, socksPort: socksPort,
 		sessions: sessions,
-		sseSlots: make(chan struct{}, config.SSEMaxClients),
-	}, nil
+	}
+	api.handler = api.newHandler()
+	return api, nil
 }
 
 // ServeHTTP is intentionally free of request logging. In particular, invalid
 // subscription paths are never formatted into a log message.
 func (a *API) ServeHTTP(w http.ResponseWriter, r *http.Request) {
-	setSecurityHeaders(w.Header())
+	if r.Method == http.MethodHead {
+		w = headResponseWriter{w}
+	}
 	if !requestHostAllowed(a.listenIP, a.listenPort, a.hostname, r.Host) {
+		setSecurityHeaders(w.Header())
 		setNoStore(w.Header())
-		a.writeProblem(w, http.StatusBadRequest, "invalid_host", "Invalid Host", "")
+		a.writeProblem(w, http.StatusBadRequest, "invalid_host", "Invalid Host")
 		return
 	}
-	if r.URL.Path == "/healthz" {
-		a.health(w, r)
+	setSecurityHeaders(w.Header())
+	if a.serveSubscription(w, r) {
 		return
 	}
-	if r.URL.Path == "/sub" || strings.HasPrefix(r.URL.Path, "/sub/") {
-		binding, _ := subscriptionPath(r.URL.EscapedPath())
-		if a.subscriptions == nil {
-			writeEmptyNotFound(w)
-			return
-		}
-		a.subscriptions.ServeSubscription(w, r, binding, a.socksAddress(r))
-		return
-	}
-	if strings.HasPrefix(r.URL.Path, "/api/v1/") || r.URL.Path == "/api/v1" {
+	if strings.HasPrefix(r.URL.Path, "/api/") && strings.Contains(r.URL.Path, "//") {
 		setNoStore(w.Header())
-		a.serveAPI(w, r)
+		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
 		return
 	}
-	a.serveAsset(w, r)
+	if !strings.HasPrefix(r.URL.Path, "/api/") && r.URL.Path != "/api" {
+		a.serveAsset(w, r)
+		return
+	}
+	a.handler.ServeHTTP(w, r)
 }
 
 func (a *API) health(w http.ResponseWriter, r *http.Request) {
-	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		a.writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method Not Allowed", "")
-		return
-	}
 	setNoStore(w.Header())
 	if a.liveness != nil && !a.liveness.Healthy() {
 		w.Header().Set("Content-Type", "text/plain; charset=utf-8")
@@ -361,82 +354,6 @@ func (a *API) health(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusOK)
 	if r.Method != http.MethodHead {
 		_, _ = io.WriteString(w, "ok\n")
-	}
-}
-
-func (a *API) serveAPI(w http.ResponseWriter, r *http.Request) {
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/access/status":
-		a.accessStatus(w, r)
-		return
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/setup":
-		a.access(w, r, true)
-		return
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/login":
-		a.access(w, r, false)
-		return
-	}
-	if r.URL.Path == "/api/v1/auth/session" {
-		writeEmptyNotFound(w)
-		return
-	}
-	if !knownAPIPath(r.URL.Path) {
-		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found", "")
-		return
-	}
-	token, session, ok := a.authenticate(r)
-	if !ok {
-		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
-		return
-	}
-	if r.URL.Path == "/api/v1/events" && !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
-		a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin", "")
-		return
-	}
-	if stateChanging(r.Method) {
-		if !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
-			a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin", "")
-			return
-		}
-		if !isJSONContentType(r.Header.Get("Content-Type")) {
-			a.writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Unsupported Content Type", "")
-			return
-		}
-		if !exactSecretEqual(session.csrf, r.Header.Get(csrfHeaderName)) {
-			a.writeProblem(w, http.StatusForbidden, "csrf_failed", "CSRF validation failed", "")
-			return
-		}
-	}
-
-	switch {
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/status":
-		a.status(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/nodes":
-		a.nodes(w, r)
-	case r.Method == http.MethodGet && strings.HasPrefix(r.URL.Path, "/api/v1/nodes/") && strings.HasSuffix(r.URL.Path, "/details"):
-		a.nodeDetails(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/"), "/details"))
-	case r.Method == http.MethodPost && strings.HasPrefix(r.URL.Path, "/api/v1/nodes/") && strings.HasSuffix(r.URL.Path, "/probe"):
-		a.probe(w, r, strings.TrimSuffix(strings.TrimPrefix(r.URL.Path, "/api/v1/nodes/"), "/probe"))
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/login":
-		a.login(w, r, token)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/auth/logout":
-		a.accountLogout(w, r)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/logout":
-		a.lock(w, r, token)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/access/token":
-		a.changeAccessToken(w, r, token, session)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/control/refresh":
-		a.refresh(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/subscription":
-		a.subscriptionMetadata(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/subscription/url":
-		a.subscriptionURL(w, r)
-	case r.Method == http.MethodGet && r.URL.Path == "/api/v1/events":
-		a.events(w, r, token, session)
-	case r.Method == http.MethodPost && r.URL.Path == "/api/v1/diagnostics/export":
-		a.diagnostics(w, r)
-	default:
-		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found", "")
 	}
 }
 
@@ -471,7 +388,7 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		return
 	}
 	if !originAllowed(r.Header.Get("Origin"), "http://"+r.Host) {
-		a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin", "")
+		a.writeProblem(w, http.StatusForbidden, "invalid_origin", "Invalid Origin")
 		return
 	}
 	var body struct {
@@ -481,18 +398,17 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 		a.writeBodyError(w, err)
 		return
 	}
-	defer clearString(&body.Token)
 	body.Token = strings.TrimSpace(body.Token)
 	client := clientIdentity(r.RemoteAddr)
 	admission, retry := a.sessions.beginAccess(client)
 	switch admission {
 	case accessBusy:
 		w.Header().Set("Retry-After", "1")
-		a.writeProblem(w, http.StatusTooManyRequests, "access_in_progress", "Access request in progress", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "access_in_progress", "Access request in progress")
 		return
 	case accessRateLimited:
 		retryAfterHeader(w.Header(), retry)
-		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests")
 		return
 	case accessAdmitted:
 		// Admitted requests continue below.
@@ -501,7 +417,7 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 	defer func() { a.sessions.finishAccess(client, successful, countedFailure) }()
 	if !validAccessToken(body.Token) {
 		countedFailure = true
-		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
+		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required")
 		return
 	}
 	a.accessMu.RLock()
@@ -520,7 +436,7 @@ func (a *API) access(w http.ResponseWriter, r *http.Request, setup bool) {
 	successful = true
 	token, session, err := a.sessions.create(r.Context())
 	if err != nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable")
 		return
 	}
 	status := http.StatusOK
@@ -549,19 +465,17 @@ func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token st
 		a.writeBodyError(w, err)
 		return
 	}
-	defer clearString(&body.Current)
-	defer clearString(&body.Next)
 	body.Current, body.Next = strings.TrimSpace(body.Current), strings.TrimSpace(body.Next)
 	client := clientIdentity(r.RemoteAddr)
 	admission, retry := a.sessions.beginAccess(client)
 	switch admission {
 	case accessBusy:
 		w.Header().Set("Retry-After", "1")
-		a.writeProblem(w, http.StatusTooManyRequests, "access_in_progress", "Access request in progress", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "access_in_progress", "Access request in progress")
 		return
 	case accessRateLimited:
 		retryAfterHeader(w.Header(), retry)
-		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "access_rate_limited", "Too Many Requests")
 		return
 	case accessAdmitted:
 	}
@@ -569,7 +483,7 @@ func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token st
 	defer func() { a.sessions.finishAccess(client, successful, countedFailure) }()
 	if !validAccessToken(body.Current) {
 		countedFailure = true
-		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
+		a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required")
 		return
 	}
 	// The write lock includes verifier rotation, revocation and the replacement
@@ -577,7 +491,7 @@ func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token st
 	a.accessMu.Lock()
 	defer a.accessMu.Unlock()
 	if !a.sessions.matches(r.Context(), token, session) {
-		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
+		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required")
 		return
 	}
 	if err := a.backend.AccessChangeToken(r.Context(), body.Current, body.Next); err != nil {
@@ -587,12 +501,12 @@ func (a *API) changeAccessToken(w http.ResponseWriter, r *http.Request, token st
 	}
 	successful = true
 	if err := a.sessions.revokeAll(r.Context()); err != nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable")
 		return
 	}
 	newToken, newSession, err := a.sessions.create(r.Context())
 	if err != nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable")
 		return
 	}
 	setSessionCookie(w, newToken, newSession.expiresAt)
@@ -654,7 +568,7 @@ func (a *API) nodeDetails(w http.ResponseWriter, r *http.Request, id string) {
 		return
 	}
 	if !validResourceID(id) {
-		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found", "")
+		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
 		return
 	}
 	details, err := a.backend.NodeDetails(r.Context(), id)
@@ -680,23 +594,22 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 		a.writeBodyError(w, err)
 		return
 	}
-	defer clearString(&body.Password)
 	if !validProviderID(body.Provider) || !validEmail(body.Account) || body.Password == "" {
-		a.writeProblem(w, http.StatusBadRequest, "invalid_login", "Invalid login", "")
+		a.writeProblem(w, http.StatusBadRequest, "invalid_login", "Invalid login")
 		return
 	}
 	admission, retry := a.sessions.beginLogin(r.Context(), token)
 	switch admission {
 	case loginBusy:
 		w.Header().Set("Retry-After", "1")
-		a.writeProblem(w, http.StatusTooManyRequests, "login_in_progress", "Login already in progress", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "login_in_progress", "Login already in progress")
 		return
 	case loginRateLimited:
 		retryAfterHeader(w.Header(), retry)
-		a.writeProblem(w, http.StatusTooManyRequests, "login_rate_limited", "Too Many Requests", "")
+		a.writeProblem(w, http.StatusTooManyRequests, "login_rate_limited", "Too Many Requests")
 		return
 	case loginSessionInactive:
-		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
+		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required")
 		return
 	case loginAdmitted:
 		// Admitted requests continue below.
@@ -704,6 +617,9 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 	ctx := r.Context()
 	successful, countedFailure := false, false
 	defer func() { a.sessions.finishLogin(ctx, token, successful, countedFailure) }()
+	if !a.extendProviderWriteDeadline(w) {
+		return
+	}
 	account, err := a.backend.Login(ctx, LoginInput{Provider: body.Provider, Account: body.Account, Password: body.Password})
 	if err != nil {
 		countedFailure = loginFailureCounts(err)
@@ -727,7 +643,7 @@ func (a *API) accountLogout(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if !validProviderID(body.Provider) {
-		a.writeProblem(w, http.StatusBadRequest, "invalid_provider", "Invalid provider", "")
+		a.writeProblem(w, http.StatusBadRequest, "invalid_provider", "Invalid provider")
 		return
 	}
 	if err := a.backend.Logout(r.Context(), body.Provider); err != nil {
@@ -743,7 +659,7 @@ func (a *API) lock(w http.ResponseWriter, r *http.Request, token string) {
 		return
 	}
 	if err := a.revokeBrowserSession(r.Context(), token); err != nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "session_unavailable", "Session unavailable")
 		return
 	}
 	clearSessionCookie(w)
@@ -767,7 +683,10 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 		return
 	}
 	if body.Provider != "" && !validProviderID(body.Provider) {
-		a.writeProblem(w, http.StatusBadRequest, "invalid_provider", "Invalid provider", "")
+		a.writeProblem(w, http.StatusBadRequest, "invalid_provider", "Invalid provider")
+		return
+	}
+	if !a.extendProviderWriteDeadline(w) {
 		return
 	}
 	if err := a.backend.Refresh(r.Context(), body.Provider); err != nil {
@@ -777,13 +696,28 @@ func (a *API) refresh(w http.ResponseWriter, r *http.Request) {
 	w.WriteHeader(http.StatusAccepted)
 }
 
+// Kuaifan refresh has three sequential request stages, each with three attempts;
+// profiles and linked providers run concurrently. Login fits within this bound.
+func (a *API) extendProviderWriteDeadline(w http.ResponseWriter) bool {
+	timeout := a.config.ProviderRequestTimeout
+	if timeout <= 0 {
+		timeout = 15 * time.Second
+	}
+	budget := 9*timeout + 10*time.Second
+	if err := http.NewResponseController(w).SetWriteDeadline(time.Now().Add(budget)); err != nil && !errors.Is(err, http.ErrNotSupported) {
+		a.backendUnavailable(w)
+		return false
+	}
+	return true
+}
+
 func (a *API) probe(w http.ResponseWriter, r *http.Request, id string) {
 	if a.backend == nil {
 		a.backendUnavailable(w)
 		return
 	}
 	if !validResourceID(id) {
-		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found", "")
+		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
 		return
 	}
 	if err := a.requireEmptyJSON(w, r); err != nil {
@@ -800,7 +734,7 @@ func (a *API) probe(w http.ResponseWriter, r *http.Request, id string) {
 
 func (a *API) subscriptionMetadata(w http.ResponseWriter, r *http.Request) {
 	if a.subscriptions == nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "subscription_unavailable", "Subscription unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "subscription_unavailable", "Subscription unavailable")
 		return
 	}
 	metadata, err := a.subscriptions.Metadata(r.Context())
@@ -813,7 +747,7 @@ func (a *API) subscriptionMetadata(w http.ResponseWriter, r *http.Request) {
 
 func (a *API) subscriptionURL(w http.ResponseWriter, r *http.Request) {
 	if a.subscriptions == nil {
-		a.writeProblem(w, http.StatusServiceUnavailable, "subscription_unavailable", "Subscription unavailable", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "subscription_unavailable", "Subscription unavailable")
 		return
 	}
 	subscriptionURL, err := a.subscriptions.SubscriptionURL(r.Context(), a.baseURL(r.Host), a.socksAddress(r))
@@ -841,7 +775,7 @@ func (a *API) diagnostics(w http.ResponseWriter, r *http.Request) {
 	redacted := redactDiagnostic(diagnostic)
 	encoded, err := json.Marshal(redacted)
 	if err != nil {
-		a.writeProblem(w, http.StatusInternalServerError, "diagnostics_unavailable", "Diagnostics unavailable", "")
+		a.writeProblem(w, http.StatusInternalServerError, "diagnostics_unavailable", "Diagnostics unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "application/json; charset=utf-8")
@@ -866,19 +800,12 @@ func (a *API) writeSSE(w http.ResponseWriter, flusher http.Flusher, payload stri
 
 func (a *API) events(w http.ResponseWriter, r *http.Request, token string, session browserSession) {
 	if !a.sessions.matches(r.Context(), token, session) {
-		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required", "")
+		a.writeProblem(w, http.StatusUnauthorized, "not_authenticated", "Authentication required")
 		return
 	}
 	source, ok := a.backend.(EventSource)
 	if !ok {
-		a.writeProblem(w, http.StatusServiceUnavailable, "events_unavailable", "Events unavailable", "")
-		return
-	}
-	select {
-	case a.sseSlots <- struct{}{}:
-		defer func() { <-a.sseSlots }()
-	default:
-		a.writeProblem(w, http.StatusTooManyRequests, "sse_capacity", "Event capacity reached", "")
+		a.writeProblem(w, http.StatusServiceUnavailable, "events_unavailable", "Events unavailable")
 		return
 	}
 	streamContext, stopStream := context.WithCancel(r.Context())
@@ -891,12 +818,16 @@ func (a *API) events(w http.ResponseWriter, r *http.Request, token string, sessi
 	defer cancel()
 	flusher, ok := w.(http.Flusher)
 	if !ok {
-		a.writeProblem(w, http.StatusInternalServerError, "streaming_unavailable", "Streaming unavailable", "")
+		a.writeProblem(w, http.StatusInternalServerError, "streaming_unavailable", "Streaming unavailable")
 		return
 	}
 	w.Header().Set("Content-Type", "text/event-stream; charset=utf-8")
 	w.Header().Set("Connection", "keep-alive")
 	w.Header().Set("X-Accel-Buffering", "no")
+	if r.Method == http.MethodHead {
+		w.WriteHeader(http.StatusOK)
+		return
+	}
 	if !a.writeSSE(w, flusher, "retry: 1000\n\n") {
 		return
 	}
@@ -963,25 +894,25 @@ func (a *API) writeJSON(w http.ResponseWriter, status int, value any) {
 	_ = json.NewEncoder(w).Encode(value)
 }
 
-func (a *API) writeProblem(w http.ResponseWriter, status int, code, title, detail string) { //nolint:unparam // detail is always empty today; problem+json rework in P3 drops it.
+func (a *API) writeProblem(w http.ResponseWriter, status int, code, title string) {
 	w.Header().Set("Content-Type", "application/problem+json; charset=utf-8")
 	w.WriteHeader(status)
 	_ = json.NewEncoder(w).Encode(struct {
+		Type   string `json:"type"`
 		Code   string `json:"code"`
 		Status int    `json:"status"`
 		Title  string `json:"title"`
-		Detail string `json:"detail,omitempty"`
-	}{Code: code, Status: status, Title: title, Detail: detail})
+	}{Type: "urn:kfadapter:problem:" + code, Code: code, Status: status, Title: title})
 }
 
 func (a *API) writeBodyError(w http.ResponseWriter, err error) {
 	switch {
 	case errors.Is(err, errContentType):
-		a.writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Unsupported Content Type", "")
+		a.writeProblem(w, http.StatusUnsupportedMediaType, "invalid_content_type", "Unsupported Content Type")
 	case errors.Is(err, errBodyTooLarge):
-		a.writeProblem(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body too large", "")
+		a.writeProblem(w, http.StatusRequestEntityTooLarge, "body_too_large", "Request body too large")
 	default:
-		a.writeProblem(w, http.StatusBadRequest, "invalid_json", "Invalid JSON", "")
+		a.writeProblem(w, http.StatusBadRequest, "invalid_json", "Invalid JSON")
 	}
 }
 
@@ -996,10 +927,10 @@ func (a *API) writeBackendError(w http.ResponseWriter, err error, fallback strin
 		if publicStatus >= 400 && publicStatus <= 599 {
 			status = publicStatus
 		}
-		a.writeProblem(w, status, code, problemTitle(status), "")
+		a.writeProblem(w, status, code, problemTitle(status))
 		return
 	}
-	a.writeProblem(w, status, fallback, problemTitle(status), "")
+	a.writeProblem(w, status, fallback, problemTitle(status))
 }
 
 func (a *API) writeAccessError(w http.ResponseWriter, err error) {
@@ -1007,17 +938,17 @@ func (a *API) writeAccessError(w http.ResponseWriter, err error) {
 	if errors.As(err, &public) {
 		switch public.HTTPStatus() {
 		case http.StatusConflict:
-			a.writeProblem(w, http.StatusConflict, "access_initialized", "Conflict", "")
+			a.writeProblem(w, http.StatusConflict, "access_initialized", "Conflict")
 			return
 		case http.StatusBadRequest:
-			a.writeProblem(w, http.StatusBadRequest, "invalid_next_access_token", "Invalid next access token", "")
+			a.writeProblem(w, http.StatusBadRequest, "invalid_next_access_token", "Invalid next access token")
 			return
 		case http.StatusUnauthorized:
-			a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required", "")
+			a.writeProblem(w, http.StatusUnauthorized, "invalid_access_token", "Authentication required")
 			return
 		}
 	}
-	a.writeProblem(w, http.StatusServiceUnavailable, "access_unavailable", "Service unavailable", "")
+	a.writeProblem(w, http.StatusServiceUnavailable, "access_unavailable", "Service unavailable")
 }
 
 func accessFailureCounts(err error) bool {
@@ -1031,7 +962,7 @@ func loginFailureCounts(err error) bool {
 }
 
 func (a *API) backendUnavailable(w http.ResponseWriter) {
-	a.writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable", "")
+	a.writeProblem(w, http.StatusServiceUnavailable, "service_unavailable", "Service unavailable")
 }
 
 func (a *API) baseURL(requestHost string) string {
@@ -1109,23 +1040,6 @@ func subscriptionPath(requestPath string) (string, bool) {
 	return identity.ParseSubscriptionPath(requestPath)
 }
 
-func knownAPIPath(requestPath string) bool {
-	switch requestPath {
-	case "/api/v1/status", "/api/v1/nodes", "/api/v1/auth/login", "/api/v1/auth/logout", "/api/v1/access/logout", "/api/v1/access/token", "/api/v1/control/refresh", "/api/v1/subscription", "/api/v1/subscription/url", "/api/v1/events", "/api/v1/diagnostics/export":
-		return true
-	}
-	return strings.HasPrefix(requestPath, "/api/v1/nodes/") && (strings.HasSuffix(requestPath, "/details") || strings.HasSuffix(requestPath, "/probe"))
-}
-
-func stateChanging(method string) bool {
-	switch method {
-	case http.MethodPost, http.MethodPut, http.MethodPatch, http.MethodDelete:
-		return true
-	default:
-		return false
-	}
-}
-
 func validProviderID(value string) bool {
 	if len(value) == 0 || len(value) > 32 || value[0] < 'a' || value[0] > 'z' {
 		return false
@@ -1177,15 +1091,6 @@ func maskAccount(account string) string {
 		return ""
 	}
 	return string(runes[0]) + "•••"
-}
-
-func clearString(value *string) {
-	if value == nil || *value == "" {
-		return
-	}
-	bytes := []byte(*value)
-	clear(bytes)
-	*value = ""
 }
 
 func firstNonEmpty(values ...string) string {

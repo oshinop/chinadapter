@@ -715,7 +715,7 @@ func TestNodeDetailsRequiresAuthenticationAndUsesExactRoute(t *testing.T) {
 
 	cookie, csrf := establish(t, api)
 	wrongMethod := requestWithCSRF(api, http.MethodPost, "/api/v1/nodes/"+nodeID+"/details", `{}`, cookie, csrf)
-	if wrongMethod.Code != http.StatusNotFound || wrongMethod.Header().Get("Cache-Control") != "no-store" {
+	if wrongMethod.Code != http.StatusMethodNotAllowed || wrongMethod.Header().Get("Allow") != "GET, HEAD" || wrongMethod.Header().Get("Cache-Control") != "no-store" {
 		t.Fatalf("node details wrong method = %d %#v", wrongMethod.Code, wrongMethod.Header())
 	}
 	badPath := request(api, http.MethodGet, "/api/v1/nodes//details", "", cookie, "")

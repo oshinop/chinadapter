@@ -1,8 +1,8 @@
 package web
 
 import (
-	"bytes"
 	"embed"
+	"io"
 	"io/fs"
 	"net/http"
 	"path"
@@ -17,23 +17,45 @@ import (
 //go:embed all:static
 var staticFiles embed.FS
 
+var staticRoot fs.FS
+
+func init() {
+	staticRoot, _ = fs.Sub(staticFiles, "static")
+}
+
 func (a *API) serveAsset(w http.ResponseWriter, r *http.Request) {
 	if r.Method != http.MethodGet && r.Method != http.MethodHead {
-		a.writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method Not Allowed", "")
+		w.Header().Set("Allow", "GET, HEAD")
+		a.writeProblem(w, http.StatusMethodNotAllowed, "method_not_allowed", "Method Not Allowed")
 		return
 	}
-	setNoStore(w.Header())
 	name, spaFallback := staticAssetName(r.URL.Path)
-	content, err := fs.ReadFile(staticFiles, "static/"+name)
+	file, err := staticRoot.Open(name)
 	if err != nil && spaFallback {
 		name = "index.html"
-		content, err = fs.ReadFile(staticFiles, "static/"+name)
+		file, err = staticRoot.Open(name)
 	}
 	if err != nil {
-		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found", "")
+		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
 		return
 	}
-	http.ServeContent(w, r, name, time.Time{}, bytes.NewReader(content))
+	defer func() { _ = file.Close() }()
+	info, err := file.Stat()
+	if err != nil || !info.Mode().IsRegular() {
+		a.writeProblem(w, http.StatusNotFound, "not_found", "Not Found")
+		return
+	}
+	seeker, ok := file.(io.ReadSeeker)
+	if !ok {
+		a.writeProblem(w, http.StatusInternalServerError, "asset_unavailable", "Asset unavailable")
+		return
+	}
+	if strings.HasPrefix(name, "assets/") {
+		w.Header().Set("Cache-Control", "public, max-age=31536000, immutable")
+	} else {
+		setNoStore(w.Header())
+	}
+	http.ServeContent(w, r, name, time.Time{}, seeker)
 }
 
 func staticAssetName(requestPath string) (name string, spaFallback bool) {

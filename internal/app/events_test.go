@@ -4,6 +4,8 @@ import (
 	"context"
 	"testing"
 	"time"
+
+	"github.com/kfadapter/kfadapter/internal/web"
 )
 
 func TestEventSubscriptionCancelStopsBackgroundWatcher(t *testing.T) {
@@ -60,5 +62,23 @@ func waitForHubWatchers(t *testing.T, hub *eventHub) {
 	case <-done:
 	case <-time.After(time.Second):
 		t.Fatal("event watcher leaked")
+	}
+}
+
+func TestEventHubDropsOldestQueuedEvent(t *testing.T) {
+	hub := newEventHub(1, 2)
+	events, cancel, err := hub.subscribe(t.Context())
+	if err != nil {
+		t.Fatal(err)
+	}
+	defer cancel()
+	for _, value := range []string{"oldest", "middle", "latest"} {
+		hub.publish(web.Event{Type: "state", Data: value})
+	}
+	if first, second := <-events, <-events; first.Data != "middle" || second.Data != "latest" {
+		t.Fatalf("queued events = %+v %+v", first, second)
+	}
+	if _, _, err := hub.subscribe(t.Context()); err == nil {
+		t.Fatal("client cap not enforced")
 	}
 }
