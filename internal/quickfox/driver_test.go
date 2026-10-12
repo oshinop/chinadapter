@@ -192,11 +192,23 @@ func TestPayFlagsAndVIPPeriodsDoNotReplaceOriginalVIPCountdown(t *testing.T) {
 	}
 }
 
-func TestAccountRequiresQuotedVIPTime(t *testing.T) {
+// The server has sent vipTime both quoted and as a JSON number (the live
+// login response observed in 2026-10 uses a number); non-integers are rejected.
+func TestAccountVIPTimeAcceptsNumberOrQuotedInteger(t *testing.T) {
 	t.Parallel()
 	for _, encoded := range []string{
 		`{"userId":15904241,"email":"alice@example.com","vipTime":98}`,
+		`{"userId":15904241,"email":"alice@example.com","vipTime":"98"}`,
+	} {
+		var payload accountPayload
+		if err := json.Unmarshal([]byte(encoded), &payload); err != nil || payload.VIPTime != 98 {
+			t.Fatalf("vipTime %s decoded to %d, %v", encoded, payload.VIPTime, err)
+		}
+	}
+	for _, encoded := range []string{
 		`{"userId":15904241,"email":"alice@example.com","vipTime":"not-a-number"}`,
+		`{"userId":15904241,"email":"alice@example.com","vipTime":98.5}`,
+		`{"userId":15904241,"email":"alice@example.com","vipTime":true}`,
 	} {
 		var payload accountPayload
 		if err := json.Unmarshal([]byte(encoded), &payload); err == nil {
@@ -205,19 +217,37 @@ func TestAccountRequiresQuotedVIPTime(t *testing.T) {
 	}
 }
 
-func TestPaidProfileRequiresMatchingFutureExactExpiry(t *testing.T) {
+func TestPaidProfileRequiresFutureExactExpiry(t *testing.T) {
 	now := time.Date(2026, 7, 22, 6, 0, 0, 0, time.UTC)
 	profiles := []accountPayload{
 		{UserID: 15904241, Email: "alice@example.com", VIPTime: 98},
 		{UserID: 15904241, Email: "alice@example.com", SVIP: svipStatus{Time: 1}},
 		{UserID: 15904241, Email: "alice@example.com", VIPTime: 98, VIPSubscription: []vipPeriod{{EndTime: "2026-07-21 14:00:00", Grade: 1}}},
-		{UserID: 15904241, Email: "alice@example.com", VIPTime: 98, VIPSubscription: []vipPeriod{{EndTime: "2026-08-22 14:00:00", Grade: 2}}},
-		{UserID: 15904241, Email: "alice@example.com", SVIP: svipStatus{Time: 1}, VIPSubscription: []vipPeriod{{EndTime: "2026-08-22 14:00:00", Grade: 1}}},
+		{UserID: 15904241, Email: "alice@example.com", SVIP: svipStatus{Time: 1}, VIPSubscription: []vipPeriod{{EndTime: "2026-07-21 14:00:00", Grade: 2}}},
 	}
 	for _, profile := range profiles {
 		if _, err := profile.account(time.FixedZone("Asia/Shanghai", 8*60*60), now); !errors.Is(err, ErrSchema) {
-			t.Fatalf("paid profile without matching future expiry error = %v", err)
+			t.Fatalf("paid profile without a future exact expiry error = %v", err)
 		}
+	}
+}
+
+// Observed live (2026-10): an SVIP account listed its only vipInfo period as
+// grade 1. The tier comes from svipTime; the expiry from the listed period.
+func TestSVIPWithOnlyGradeOnePeriodUsesThatExpiry(t *testing.T) {
+	now := time.Date(2026, 10, 12, 8, 0, 0, 0, time.UTC)
+	shanghai := time.FixedZone("Asia/Shanghai", 8*60*60)
+	payload := accountPayload{
+		UserID: 15904241, Email: "alice@example.com", VIPTime: 2, SVIP: svipStatus{Time: 31},
+		VIPSubscription: []vipPeriod{{EndTime: "2026-11-12 01:42:36", Grade: 1}},
+	}
+	account, err := payload.account(shanghai, now)
+	if err != nil {
+		t.Fatal(err)
+	}
+	want := time.Date(2026, 11, 12, 1, 42, 36, 0, shanghai).UTC()
+	if account.Tier != svipTier || !account.SubscriptionActive || !account.SubscriptionEndsAt.Equal(want) {
+		t.Fatalf("account = %#v, want SVIP active until %s", account, want)
 	}
 }
 
