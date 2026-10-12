@@ -1,5 +1,4 @@
-// Package endpoint validates hostnames shared by configuration and advertised endpoints.
-package endpoint
+package config
 
 import (
 	"errors"

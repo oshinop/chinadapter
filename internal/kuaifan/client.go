@@ -537,7 +537,7 @@ func requiredStringLimit(fields map[string]json.RawMessage, name string, limit i
 	return value, nil
 }
 
-func requiredPositiveInt32(fields map[string]json.RawMessage, name string) (int32, error) { //nolint:unparam // name is always "userId"; removed with the P1 decoder rewrite.
+func requiredPositiveInt32(fields map[string]json.RawMessage, name string) (int32, error) { //nolint:unparam // the field name stays explicit at call sites for readability.
 	raw, ok := fields[name]
 	if !ok {
 		return 0, ErrSchema
@@ -786,7 +786,7 @@ func localizedLineName(object map[string]json.RawMessage, preferredLanguage stri
 	return fallback, true, nil
 }
 
-func optionalStringLimit(object map[string]json.RawMessage, limit int, names ...string) (string, bool, error) { //nolint:unparam // bool result unused; removed with the P1 decoder rewrite.
+func optionalStringLimit(object map[string]json.RawMessage, limit int, names ...string) (string, bool, error) { //nolint:unparam // the presence flag mirrors requiredStringLimit; callers may ignore it.
 	for _, name := range names {
 		raw, exists := object[name]
 		if !exists {

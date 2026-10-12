@@ -12,7 +12,7 @@ import (
 	"strconv"
 	"strings"
 
-	"github.com/kfadapter/kfadapter/internal/endpoint"
+	"github.com/kfadapter/kfadapter/internal/config"
 	"github.com/kfadapter/kfadapter/internal/identity"
 	"github.com/kfadapter/kfadapter/internal/provider"
 	"github.com/kfadapter/kfadapter/internal/state"
@@ -111,7 +111,7 @@ func parseAddress(address string) (string, string, error) {
 	if err == nil && ip.Zone() == "" && ip.String() == host {
 		return ip.String(), port, nil
 	}
-	if endpoint.ValidateHostname(host) != nil {
+	if config.ValidateHostname(host) != nil {
 		return "", "", ErrInvalidAddress
 	}
 	return host, port, nil

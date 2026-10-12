@@ -11,7 +11,6 @@ import (
 	"strconv"
 	"time"
 
-	"github.com/kfadapter/kfadapter/internal/endpoint"
 	"gopkg.in/yaml.v3"
 )
 
@@ -252,7 +251,7 @@ func validateHostname(name, hostname string) error {
 	if hostname == "" {
 		return nil
 	}
-	if err := endpoint.ValidateHostname(hostname); err != nil {
+	if err := ValidateHostname(hostname); err != nil {
 		return fmt.Errorf("%s %w", name, err)
 	}
 	return nil

@@ -558,7 +558,7 @@ func retryable(err error) bool {
 		return status.status == http.StatusRequestTimeout || status.status == http.StatusTooManyRequests || status.status >= http.StatusInternalServerError && status.status <= 599
 	}
 	var networkErr net.Error
-	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) //nolint:staticcheck // Temporary is the errno-level signal net.OpError exposes; P1 replaces this classifier.
+	return errors.As(err, &networkErr) && (networkErr.Timeout() || networkErr.Temporary()) //nolint:staticcheck // Temporary is the errno-level signal net.OpError exposes; dropping it would stop retrying resets and descriptor exhaustion.
 }
 
 func retryDelay(driver *Driver, attempt int) time.Duration {

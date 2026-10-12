@@ -20,7 +20,7 @@ import (
 	"time"
 	"unicode/utf8"
 
-	"github.com/kfadapter/kfadapter/internal/endpoint"
+	adapterconfig "github.com/kfadapter/kfadapter/internal/config"
 	"github.com/kfadapter/kfadapter/internal/identity"
 )
 
@@ -264,7 +264,7 @@ func NewAPI(config Config, dependencies Dependencies) (*API, error) {
 		return nil, errors.New("SOCKS listen must be a canonical numeric IP address and port")
 	}
 	if config.Hostname != "" {
-		if err := endpoint.ValidateHostname(config.Hostname); err != nil {
+		if err := adapterconfig.ValidateHostname(config.Hostname); err != nil {
 			return nil, fmt.Errorf("hostname %w", err)
 		}
 	}
