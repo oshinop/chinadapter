@@ -128,7 +128,7 @@ func newStableHarness(t *testing.T, directory string) *stableHarness {
 	if err != nil {
 		t.Fatal(err)
 	}
-	harness.api, err = web.NewAPI(web.Config{Listen: "0.0.0.0:10809", Hostname: "adapter.example.com", SocksListen: "0.0.0.0:10808"}, web.Dependencies{Backend: harness.runtime, Subscriptions: web.NewSubscriptionAdapter(service), Sessions: store})
+	harness.api, err = web.NewAPI(web.Config{Listen: "0.0.0.0:10809", Hostname: "adapter.example.com", SocksListen: "0.0.0.0:10808"}, web.Dependencies{Backend: harness.runtime, Subscriptions: NewSubscriptionAdapter(service), Sessions: store})
 	if err != nil {
 		t.Fatal(err)
 	}

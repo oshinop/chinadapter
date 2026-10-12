@@ -28,7 +28,7 @@ func NewHTTPServer(config Config, dependencies Dependencies) (*http.Server, *API
 	}, api, nil
 }
 
-// Listen binds the configured management address. Cmd owns serving and
+// Listen binds the configured management address. App owns serving and
 // shutdown orchestration.
 func (a *API) Listen() (net.Listener, error) {
 	if a == nil {

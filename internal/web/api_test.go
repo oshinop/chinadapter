@@ -12,6 +12,8 @@ import (
 	"sync"
 	"testing"
 	"time"
+
+	"github.com/kfadapter/kfadapter/internal/credentials"
 )
 
 const (
@@ -201,6 +203,10 @@ func (s *fakeSubscriptions) ServeSubscription(w http.ResponseWriter, _ *http.Req
 	w.Header().Set("Content-Type", "text/plain; charset=utf-8")
 	w.WriteHeader(http.StatusOK)
 	_, _ = w.Write([]byte("subscription"))
+}
+
+func (s *fakeSubscriptions) ParseSubscriptionPath(requestPath string) (string, bool) {
+	return credentials.ParseSubscriptionPath(requestPath)
 }
 
 func newTestAPI(t *testing.T, backend *fakeBackend, subscriptions *fakeSubscriptions) *API {

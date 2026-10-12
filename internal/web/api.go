@@ -1,5 +1,5 @@
 // Package web provides the loopback browser control plane. It intentionally
-// depends only on consumer-owned interfaces so cmd can wire control, state,
+// depends only on consumer-owned interfaces so app can wire control, state,
 // SOCKS, and subscription implementations without an import cycle.
 package web
 
@@ -52,7 +52,7 @@ type BrowserSessionPersistence interface {
 	DeleteAllBrowserSessions(context.Context) error
 }
 
-// Dependencies are injected by cmd. Backend implementations normally adapt
+// Dependencies are injected by app. Backend implementations normally adapt
 // control/state/SOCKS services; this package never receives their secrets.
 type Dependencies struct {
 	Backend       Backend
@@ -96,6 +96,7 @@ type EventSource interface {
 type SubscriptionService interface {
 	Metadata(context.Context) (SubscriptionMetadata, error)
 	SubscriptionURL(context.Context, string, string) (SubscriptionURL, error)
+	ParseSubscriptionPath(string) (string, bool)
 	ServeSubscription(http.ResponseWriter, *http.Request, string, string)
 }
 

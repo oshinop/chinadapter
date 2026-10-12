@@ -4,8 +4,6 @@ import (
 	"net"
 	"net/http"
 	"strings"
-
-	"github.com/kfadapter/kfadapter/internal/credentials"
 )
 
 func (a *API) subscriptionMetadata(w http.ResponseWriter, r *http.Request) {
@@ -44,20 +42,16 @@ func (a *API) baseURL(requestHost string) string {
 	return "http://" + requestHost
 }
 
-func subscriptionPath(requestPath string) (string, bool) {
-	return credentials.ParseSubscriptionPath(requestPath)
-}
-
 // Subscription paths retain the deliberately empty failure contract, including
 // malformed UUIDs and unsupported methods. They are not browser API routes.
 func (a *API) serveSubscription(w http.ResponseWriter, r *http.Request) bool {
 	if r.URL.Path != "/sub" && !strings.HasPrefix(r.URL.Path, "/sub/") {
 		return false
 	}
-	binding, _ := subscriptionPath(r.URL.EscapedPath())
 	if a.subscriptions == nil {
 		writeEmptyNotFound(w)
 	} else {
+		binding, _ := a.subscriptions.ParseSubscriptionPath(r.URL.EscapedPath())
 		a.subscriptions.ServeSubscription(w, r, binding, a.socksAddress(r))
 	}
 	return true
