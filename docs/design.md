@@ -164,7 +164,7 @@ The persisted QuickFox `RefreshState` contains only the provider token, canonica
 
 QuickFox catalog refresh uses the same bounded library retry policy for transient transport/HTTP errors: three attempts, a 250ms initial interval, doubling with ±50% randomization, and a 500ms ceiling on actual delays. Business/schema/crypto errors and confirmed token rejection are not retried within the request; the independent account supervisor retains state and handles later refresh scheduling. Parent cancellation stops the request retry immediately.
 
-For a SOCKS `CONNECT`, the QuickFox transport resolves the requested destination to IPv4, opens separate control and data TCP connections to the selected relay, sends the recovered control and destination prefaces, waits for the fixed control acknowledgement, revalidates the immutable session pin, and then relays the stream through the recovered XOR framing. It deliberately returns an error for datagrams: no QuickFox UDP protocol has been verified.
+For a SOCKS `CONNECT`, the QuickFox transport resolves the requested destination to IPv4, opens separate control and data TCP connections to the selected relay, sends the recovered control and destination prefaces, waits for the 14-byte control acknowledgement (only its length is checked, since live relays vary its contents per connection), revalidates the immutable session pin, and then relays the stream through the recovered XOR framing. It deliberately returns an error for datagrams: no QuickFox UDP protocol has been verified.
 
 ### 3.4 Adding another provider
 

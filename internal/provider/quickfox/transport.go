@@ -27,7 +27,7 @@ var ErrHandshake = errors.New("quickfox: relay handshake failed")
 type lookupNetIPFunc func(context.Context, string, string) ([]netip.Addr, error)
 
 // Transport implements the observed QuickFox native framed TCP relay for IPv4
-// destinations. It validates the 14-byte zero control acknowledgement before
+// destinations. It reads the 14-byte control acknowledgement before
 // opening the data connection. The provider's UDP framing remains unavailable
 // because it has not been verified.
 type Transport struct {
@@ -74,11 +74,6 @@ func (transport *Transport) RelayStream(ctx context.Context, request provider.Re
 	var acknowledgement [controlACKSize]byte
 	if _, err := io.ReadFull(control, acknowledgement[:]); err != nil {
 		return fmt.Errorf("%w: read control acknowledgement: %w", ErrHandshake, err)
-	}
-	// The existing transport fixture acknowledges with exactly 14 zero bytes;
-	// no individual field semantics have been established.
-	if acknowledgement != [controlACKSize]byte{} {
-		return fmt.Errorf("%w: invalid control acknowledgement", ErrHandshake)
 	}
 	if err := control.SetDeadline(time.Time{}); err != nil {
 		return fmt.Errorf("quickfox: clear control deadline: %w", err)

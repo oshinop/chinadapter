@@ -15,56 +15,6 @@ import (
 	"github.com/oshinop/chinadapter/internal/provider"
 )
 
-func TestTransportRejectsControlAcknowledgementBeforeDataPreface(t *testing.T) {
-	t.Parallel()
-	for index := range controlACKSize {
-		t.Run(fmt.Sprintf("byte-%d", index), func(t *testing.T) {
-			t.Parallel()
-			client, adapter := loopbackTCPPair(t)
-			control, controlAdapter := loopbackTCPPair(t)
-			acknowledgement := make([]byte, controlACKSize)
-			acknowledgement[index] = 1
-			serverErr := make(chan error, 1)
-			go func() {
-				if err := readNativePreface(control); err != nil {
-					serverErr <- err
-					return
-				}
-				if err := writeAll(control, acknowledgement); err != nil {
-					serverErr <- err
-					return
-				}
-				var unexpected [1]byte
-				count, err := control.Read(unexpected[:])
-				if count != 0 || !errors.Is(err, io.EOF) {
-					serverErr <- fmt.Errorf("control after rejection: read %d bytes, error %w", count, err)
-					return
-				}
-				serverErr <- nil
-			}()
-			dials := 0
-			request := nativeRelayRequest(t, adapter, func(context.Context, string, string) (net.Conn, error) {
-				dials++
-				if dials != 1 {
-					return nil, errors.New("unexpected data connection")
-				}
-				return controlAdapter, nil
-			})
-			admitted, ready := false, false
-			request.Admit = func() bool { admitted = true; return true }
-			request.Ready = func(net.Addr) error { ready = true; return nil }
-			err := NewTransport().RelayStream(context.Background(), request)
-			if !errors.Is(err, ErrHandshake) || dials != 1 || admitted || ready {
-				t.Fatalf("rejected acknowledgement: error %v, dials %d, admitted %t, ready %t", err, dials, admitted, ready)
-			}
-			if err := <-serverErr; err != nil {
-				t.Fatal(err)
-			}
-			_ = client.Close()
-		})
-	}
-}
-
 func TestTransportRejectsTruncatedControlAcknowledgement(t *testing.T) {
 	t.Parallel()
 	_, adapter := loopbackTCPPair(t)
@@ -307,11 +257,17 @@ func readNativePreface(connection net.Conn) error {
 	return err
 }
 
+// observedControlACK is a control acknowledgement captured from live QuickFox
+// relays in 2026-10. Its leading and trailing bytes were constant across nodes;
+// the middle bytes changed per connection. No field semantics are established,
+// so the transport only requires its length.
+var observedControlACK = [controlACKSize]byte{0x0a, 0x08, 0x09, 0x0a, 0x0e, 0x98, 0x53, 0xef, 0x1a, 0x03}
+
 func completeNativeHandshake(control, upstream net.Conn) error {
 	if err := readNativePreface(control); err != nil {
 		return err
 	}
-	if err := writeAll(control, make([]byte, controlACKSize)); err != nil {
+	if err := writeAll(control, observedControlACK[:]); err != nil {
 		return err
 	}
 	return readNativePreface(upstream)
