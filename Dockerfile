@@ -10,7 +10,7 @@ RUN cd web && npm ci --no-audit --no-fund
 COPY web web/
 RUN cd web && npm run build
 
-FROM golang:1.26.5-alpine@sha256:0178a641fbb4858c5f1b48e34bdaabe0350a330a1b1149aabd498d0699ff5fb2 AS builder
+FROM golang:1.26.9-alpine@sha256:3082400e369fa24d5fc60bca20edab3f6d604e0c5a690ec66b295eff4dd87ade AS builder
 WORKDIR /src
 # Module downloads are cached until go.mod or go.sum changes.
 COPY go.mod go.sum ./

@@ -236,7 +236,7 @@ Both volumes are Compose-managed. `docker compose down -v` removes the active pr
 
 The image working directory is `/chinadapter`; the service runs `./chinadapter`, loads `./config.yaml`, and stores SQLite at `./data/state.db`.
 
-Production Compose runs `ghcr.io/oshinop/chinadapter:latest`. The Dockerfile builds the frontend in a digest-pinned `node:24-alpine` stage and the Go binary in a digest-pinned `golang:1.26.5-alpine` stage, then runs the result from digest-pinned `alpine:3.23`. `.github/workflows/ci.yml` runs frontend tests, Go vet and race tests, lint, govulncheck, Compose validation, and an image smoke test. Publishing to `ghcr.io` runs only after those pass: `latest` from `main`, and version tags from `v*`. The state directory remains owned by numeric UID/GID `65532:65532`.
+Production Compose runs `ghcr.io/oshinop/chinadapter:latest`. The Dockerfile builds the frontend in a digest-pinned `node:24-alpine` stage and the Go binary in a digest-pinned `golang:1.26.9-alpine` stage, then runs the result from digest-pinned `alpine:3.23`. `.github/workflows/ci.yml` runs frontend tests, Go vet and race tests, lint, govulncheck, Compose validation, and an image smoke test. Publishing to `ghcr.io` runs only after those pass: `latest` from `main`, and version tags from `v*`. The state directory remains owned by numeric UID/GID `65532:65532`.
 
 The image and service do not require a privileged bind, Docker socket, host PID namespace, host `/sys`, host home directory, browser profile, or external-consumer state. A configuration or startup failure must stop the daemon rather than widen its bind or quietly select another address.
 
