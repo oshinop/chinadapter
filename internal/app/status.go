@@ -103,7 +103,7 @@ func (r *Runtime) Nodes(context.Context) ([]web.Node, error) {
 			latency = int(node.TCPRTT.Round(time.Millisecond) / time.Millisecond)
 		}
 		result = append(result, web.Node{
-			ID: node.ID, Name: node.Name, Group: node.Group, Provider: string(node.Provider),
+			ID: node.ID, Name: node.Name, Group: node.Group, Provider: string(node.Provider), Protocol: string(node.Protocol),
 			Health: string(node.Health), TCPLatencyMS: latency, UDPHealth: string(node.UDPHealth),
 			Eligible: node.Eligible,
 		})

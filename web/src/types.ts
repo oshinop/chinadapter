@@ -50,6 +50,7 @@ export interface NodeRecord {
   name: string;
   group: string;
   provider: string;
+  protocol: string;
   health: NodeHealth;
   tcpLatencyMs?: number;
   probeError?: string;

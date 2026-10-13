@@ -25,8 +25,8 @@ export const signedOutStatus = (): StatusResponse => ({
 });
 
 export const nodes: NodeRecord[] = [
-  { id: "n-east", name: "Shanghai 01", group: "East China", provider: "kuaifan", health: "healthy", tcpLatencyMs: 76, udpHealth: "unavailable", eligible: true },
-  { id: "n-west", name: "Chengdu 02", group: "West China", provider: "kuaifan", health: "degraded", tcpLatencyMs: 114, udpHealth: "unavailable", eligible: true },
+  { id: "n-east", name: "Shanghai 01", group: "East China", provider: "kuaifan", protocol: "kuaifan-wifiin", health: "healthy", tcpLatencyMs: 76, udpHealth: "unavailable", eligible: true },
+  { id: "n-west", name: "Chengdu 02", group: "West China", provider: "kuaifan", protocol: "kuaifan-speedin", health: "degraded", tcpLatencyMs: 114, udpHealth: "unavailable", eligible: true },
 ];
 
 export const chengduDetails: NodeDetails = {

@@ -169,6 +169,7 @@ type Node struct {
 	Name         string `json:"name"`
 	Group        string `json:"group"`
 	Provider     string `json:"provider"`
+	Protocol     string `json:"protocol"`
 	Health       string `json:"health"`
 	TCPLatencyMS int    `json:"tcpLatencyMs,omitempty"`
 	UDPHealth    string `json:"udpHealth"`

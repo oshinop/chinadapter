@@ -95,7 +95,7 @@ describe("access token and browser session", () => {
     const historyWrites = vi.spyOn(window.history, "replaceState");
     const password = screen.getByLabelText("Password") as HTMLInputElement;
     await userEvent.selectOptions(screen.getByLabelText("Provider"), "kuaifan");
-    await userEvent.type(screen.getByLabelText("Email"), "operator@example.com");
+    await userEvent.type(screen.getByLabelText("Email or phone"), "operator@example.com");
     await userEvent.type(password, "do-not-retain");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -111,7 +111,7 @@ describe("access token and browser session", () => {
     Object.assign(api, { login: vi.fn().mockRejectedValue(new ApiError({ title: "Unauthorized", status: 401, code: "login_rejected" })) });
     await userEvent.selectOptions(screen.getByLabelText("Provider"), "kuaifan");
     const password = screen.getByLabelText("Password") as HTMLInputElement;
-    await userEvent.type(screen.getByLabelText("Email"), "operator@example.com");
+    await userEvent.type(screen.getByLabelText("Email or phone"), "operator@example.com");
     await userEvent.type(password, "wrong-password");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -124,7 +124,7 @@ describe("access token and browser session", () => {
     const pending = Promise.withResolvers<void>();
     await userEvent.selectOptions(screen.getByLabelText("Provider"), "kuaifan");
     Object.assign(api, { login: vi.fn().mockReturnValue(pending.promise) });
-    await userEvent.type(screen.getByLabelText("Email"), "operator@example.com");
+    await userEvent.type(screen.getByLabelText("Email or phone"), "operator@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "password");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
 
@@ -215,7 +215,7 @@ describe("access token and browser session", () => {
 
   it("requires an explicit provider before account sign-in", async () => {
     const api = await openAccountLogin();
-    await userEvent.type(screen.getByLabelText("Email"), "operator@example.com");
+    await userEvent.type(screen.getByLabelText("Email or phone"), "operator@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "secret");
     await userEvent.click(screen.getByRole("button", { name: "Sign in" }));
     expect((await screen.findByRole("alert")).textContent).toContain("Choose a provider before entering account credentials.");
@@ -229,7 +229,7 @@ describe("access token and browser session", () => {
     await userEvent.click(screen.getByRole("button", { name: "QuickFox" }));
     expect(screen.getByText("Connect QuickFox", { selector: "[data-slot='card-title']" })).toBeTruthy();
     expect(screen.queryByRole("tree", { name: "Nodes by group" })).toBeNull();
-    await userEvent.type(screen.getByLabelText("Email"), "quickfox@example.com");
+    await userEvent.type(screen.getByLabelText("Email or phone"), "quickfox@example.com");
     await userEvent.type(screen.getByLabelText("Password"), "quickfox-secret");
     await userEvent.click(screen.getByRole("button", { name: "Connect QuickFox" }));
     await waitFor(() => expect(api.login).toHaveBeenCalledWith("quickfox", "quickfox@example.com", "quickfox-secret"));

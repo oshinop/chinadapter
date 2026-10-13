@@ -122,6 +122,7 @@ export class ApiClient {
         name: node.name,
         group: node.group,
         provider: node.provider,
+        protocol: node.protocol,
         health: node.health,
         tcpLatencyMs: node.tcpLatencyMs,
         udpHealth: node.udpHealth,

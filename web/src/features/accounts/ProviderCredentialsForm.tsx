@@ -46,7 +46,7 @@ export function ProviderCredentialsForm({
             return;
         }
         if (!email || !submittedPassword) {
-            setLocalError("Enter your email and password.");
+            setLocalError("Enter your email or phone number and password.");
             return;
         }
         setSubmitting(true);
@@ -85,14 +85,14 @@ export function ProviderCredentialsForm({
                     </select>
                 </Field>
             )}
-            <Field label="Email" name={accountID}>
+            <Field label="Email or phone" name={accountID}>
                 <Input
                     autoComplete="off"
                     id={accountID}
                     inputMode="email"
                     name="account"
                     onChange={(event) => setAccount(event.currentTarget.value)}
-                    type="email"
+                    type="text"
                     value={account}
                 />
             </Field>

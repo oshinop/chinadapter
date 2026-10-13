@@ -177,6 +177,28 @@ describe("node inventory", () => {
     await waitFor(() => expect(probeAll.disabled).toBe(false));
     expect(api.refresh).not.toHaveBeenCalled();
   });
+
+  it("probes only one group's nodes, in node order", async () => {
+    const api = await renderAt("/", [
+      { ...nodes[0], id: "east-b", name: "Beta 02", group: "East China" },
+      { ...nodes[0], id: "east-a", name: "Alpha 01", group: "East China" },
+      { ...nodes[1], id: "west", name: "Chengdu 02", group: "West China" },
+    ]);
+    vi.mocked(api.probeNode).mockImplementation(async (nodeId) => ({ nodeId, health: "healthy", tcpLatencyMs: 30, probedAt: "2026-07-15T10:03:00Z" }));
+    const group = screen.getByRole("treeitem", { name: "East China group" });
+    const probeGroup = within(group).getByRole("button", { name: "Check TCP reachability for the East China group" }) as HTMLButtonElement;
+
+    await userEvent.click(probeGroup);
+
+    await waitFor(() => expect(probeGroup.disabled).toBe(false));
+    expect(vi.mocked(api.probeNode).mock.calls.map(([nodeId]) => nodeId)).toEqual(["east-a", "east-b"]);
+  });
+
+  it("labels each node with its upstream protocol", async () => {
+    await renderAt("/");
+    const group = await openGroup("West China");
+    expect(within(group).getByTitle("Upstream protocol: kuaifan-speedin").textContent).toBe("SPEEDIN");
+  });
 });
 
 describe("subscription URL", () => {

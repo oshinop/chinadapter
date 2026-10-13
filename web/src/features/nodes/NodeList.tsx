@@ -11,6 +11,10 @@ import { isSessionProblem } from "@/lib/errors";
 import { compareGroupNames, groupNameCollator } from "@/lib/groups";
 import { formatLatency, healthLabel, probeFailureLabel } from "./health";
 import { NodeDetailsPopover } from "./NodeDetailsPopover";
+import { protocolLabel } from "./protocols";
+
+// Batch scope for the header button; group batches use the group name.
+const allNodesScope = "\u0000all";
 
 export function NodeList({
     api,
@@ -26,7 +30,8 @@ export function NodeList({
     onNodesChange: Dispatch<SetStateAction<NodeRecord[]>>;
 }) {
     const [activeProbe, setActiveProbe] = useState<string | null>(null);
-    const [probingAll, setProbingAll] = useState(false);
+    const [batchScope, setBatchScope] = useState<string | null>(null);
+    const probing = batchScope !== null || activeProbe !== null;
     const active = useRef(true);
 
     useEffect(
@@ -103,51 +108,43 @@ export function NodeList({
             );
     }, [nodes]);
 
-    const probeAll = async () => {
-        if (nodes.length === 0) return;
+    const probeBatch = async (targets: readonly NodeRecord[], scope: string) => {
+        if (targets.length === 0) return;
         const revision = getSessionRevision();
-        setProbingAll(true);
+        setBatchScope(scope);
         try {
-            for (const [, members] of groupedNodes) {
-                for (const node of members) {
+            for (const node of targets) {
+                if (!active.current || revision !== getSessionRevision())
+                    return;
+                try {
+                    const result = await api.probeNode(node.id);
                     if (!active.current || revision !== getSessionRevision())
                         return;
-                    try {
-                        const result = await api.probeNode(node.id);
-                        if (
-                            !active.current ||
-                            revision !== getSessionRevision()
-                        )
-                            return;
-                        onNodesChange((previous) =>
-                            previous.map((current) =>
-                                current.id === node.id
-                                    ? {
-                                          ...current,
-                                          health: result.health,
-                                          tcpLatencyMs: result.tcpLatencyMs,
-                                          probeError: undefined,
-                                      }
-                                    : current,
-                            ),
-                        );
-                    } catch (requestError) {
-                        if (
-                            !active.current ||
-                            revision !== getSessionRevision()
-                        )
-                            return;
-                        if (isSessionProblem(requestError)) {
-                            onAccessLost();
-                            return;
-                        }
-                        markProbeFailed(node.id, requestError);
+                    onNodesChange((previous) =>
+                        previous.map((current) =>
+                            current.id === node.id
+                                ? {
+                                      ...current,
+                                      health: result.health,
+                                      tcpLatencyMs: result.tcpLatencyMs,
+                                      probeError: undefined,
+                                  }
+                                : current,
+                        ),
+                    );
+                } catch (requestError) {
+                    if (!active.current || revision !== getSessionRevision())
+                        return;
+                    if (isSessionProblem(requestError)) {
+                        onAccessLost();
+                        return;
                     }
+                    markProbeFailed(node.id, requestError);
                 }
             }
         } finally {
             if (active.current && revision === getSessionRevision())
-                setProbingAll(false);
+                setBatchScope(null);
         }
     };
 
@@ -161,18 +158,21 @@ export function NodeList({
                         <TooltipTrigger asChild>
                             <Button
                                 aria-label="Check TCP reachability for all nodes"
-                                disabled={
-                                    probingAll ||
-                                    activeProbe !== null ||
-                                    nodes.length === 0
+                                disabled={probing || nodes.length === 0}
+                                onClick={() =>
+                                    void probeBatch(
+                                        groupedNodes.flatMap(
+                                            ([, members]) => members,
+                                        ),
+                                        allNodesScope,
+                                    )
                                 }
-                                onClick={() => void probeAll()}
                                 size="icon"
                                 variant="ghost"
                             >
                                 <Gauge
                                     className={
-                                        probingAll
+                                        batchScope === allNodesScope
                                             ? "size-4 animate-pulse"
                                             : "size-4"
                                     }
@@ -213,6 +213,34 @@ export function NodeList({
                                 <Badge variant="secondary">
                                     {members.length}
                                 </Badge>
+                                <Tooltip>
+                                    <TooltipTrigger asChild>
+                                        <Button
+                                            aria-label={`Check TCP reachability for the ${group} group`}
+                                            className="size-7"
+                                            disabled={probing}
+                                            onClick={(event) => {
+                                                // Keep the summary from toggling the group.
+                                                event.preventDefault();
+                                                event.stopPropagation();
+                                                void probeBatch(members, group);
+                                            }}
+                                            size="icon"
+                                            variant="ghost"
+                                        >
+                                            <Gauge
+                                                className={
+                                                    batchScope === group
+                                                        ? "size-4 animate-pulse"
+                                                        : "size-4"
+                                                }
+                                            />
+                                        </Button>
+                                    </TooltipTrigger>
+                                    <TooltipContent>
+                                        Check this group
+                                    </TooltipContent>
+                                </Tooltip>
                             </summary>
                             <div className="node-group__content" role="group">
                                 <div className="node-group__content-inner divide-y divide-border border-t border-border">
@@ -224,9 +252,20 @@ export function NodeList({
                                             role="treeitem"
                                         >
                                             <div className="min-w-0">
-                                                <p className="truncate text-sm font-medium">
-                                                    {node.name}
-                                                </p>
+                                                <div className="flex min-w-0 items-center gap-2">
+                                                    <p className="truncate text-sm font-medium">
+                                                        {node.name}
+                                                    </p>
+                                                    <Badge
+                                                        className="shrink-0 px-1.5 py-0 text-[0.65rem] font-medium tracking-wide"
+                                                        title={`Upstream protocol: ${node.protocol}`}
+                                                        variant="outline"
+                                                    >
+                                                        {protocolLabel(
+                                                            node.protocol,
+                                                        )}
+                                                    </Badge>
+                                                </div>
                                                 <p className="mt-0.5 text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
                                                     {node.provider}
                                                 </p>
@@ -245,11 +284,7 @@ export function NodeList({
                                                     <TooltipTrigger asChild>
                                                         <Button
                                                             aria-label={`Check TCP reachability for ${node.name}`}
-                                                            disabled={
-                                                                probingAll ||
-                                                                activeProbe !==
-                                                                    null
-                                                            }
+                                                            disabled={probing}
                                                             onClick={() =>
                                                                 void probe(node)
                                                             }

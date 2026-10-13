@@ -22,7 +22,7 @@ func (a *API) login(w http.ResponseWriter, r *http.Request, token string) {
 		a.writeBodyError(w, err)
 		return
 	}
-	if !validProviderID(body.Provider) || !validEmail(body.Account) || body.Password == "" {
+	if !validProviderID(body.Provider) || !validAccount(body.Account) || body.Password == "" {
 		a.writeProblem(w, http.StatusBadRequest, "invalid_login", "Invalid login")
 		return
 	}
@@ -135,7 +135,22 @@ func validProviderID(value string) bool {
 	return true
 }
 
-func validEmail(value string) bool {
-	parsed, err := mail.ParseAddress(value)
-	return err == nil && parsed.Address == value && strings.Contains(value, "@") && !strings.ContainsAny(value, "\r\n")
+// validAccount accepts the two account forms providers use: an email address,
+// or a phone number of 6–20 digits with an optional leading "+". Each driver
+// still validates the form it supports.
+func validAccount(value string) bool {
+	if strings.Contains(value, "@") {
+		parsed, err := mail.ParseAddress(value)
+		return err == nil && parsed.Address == value && !strings.ContainsAny(value, "\r\n")
+	}
+	digits := strings.TrimPrefix(value, "+")
+	if len(digits) < 6 || len(digits) > 20 {
+		return false
+	}
+	for _, character := range digits {
+		if character < '0' || character > '9' {
+			return false
+		}
+	}
+	return true
 }
