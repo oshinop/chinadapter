@@ -27,9 +27,8 @@ var ErrHandshake = errors.New("quickfox: relay handshake failed")
 type lookupNetIPFunc func(context.Context, string, string) ([]netip.Addr, error)
 
 // Transport implements the observed QuickFox native framed TCP relay for IPv4
-// destinations. It reads the 14-byte control acknowledgement before
-// opening the data connection. The provider's UDP framing remains unavailable
-// because it has not been verified.
+// destinations, and its TCP-carried datagram relay (datagram.go). Streams read
+// the 14-byte control acknowledgement before opening the data connection.
 type Transport struct {
 	clock  func() time.Time
 	lookup lookupNetIPFunc
@@ -154,7 +153,8 @@ func nativeNonce(now time.Time) byte {
 }
 
 func encodeTunnelAuth(authority tunnelAuthority, nonce, mode byte, target netip.Addr, targetPort uint16) ([]byte, error) {
-	if !validToken(authority.Token) || authority.UserID <= 0 || authority.UserID > int64(^uint32(0)) || nonce > 15 || mode != 0x10 && mode != 0x20 || targetPort != 0 && !target.Is4() {
+	if !validToken(authority.Token) || authority.UserID <= 0 || authority.UserID > int64(^uint32(0)) || nonce > 15 ||
+		mode != 0x10 && mode != 0x20 && mode != datagramControlMode || targetPort != 0 && !target.Is4() {
 		return nil, ErrSchema
 	}
 	identity := []byte("C" + authority.Token + "," + strconv.FormatUint(uint64(authority.AppID), 10))
