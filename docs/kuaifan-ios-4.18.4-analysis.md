@@ -174,6 +174,48 @@ internal/provider/kuaifan/
 
 `internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/provider/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
 
+## Verification against Android 4.18.4.10 and Windows 4.7.6 beta (2026-10)
+
+The full comparison matrices and file/function evidence index are in the October KuaiFan review, kept with the client workspace outside this repository (`clients/20261013/kuaifan/REVIEW.md`; `x/...` paths below are relative to that directory). The newer SPEEDIN and Hysteria2 transports the beta selects are specified in [kuaifan-speedin-hysteria2-analysis.md](kuaifan-speedin-hysteria2-analysis.md). This verification uses the supplied newest Android APK and Windows beta, recovered static code, and the **prior live check** supplied with the review assignment. No new login, API/tunnel probe, or code change was made. Static presence of a receiver is not proof that the newest client selects it or that a production server accepts every extension.
+
+### Control plane
+
+The Windows beta retains the existing **AES-256-CBC** envelope: PBKDF2-HMAC-SHA1, 100 iterations, 32-byte derived key, the same normal/authority fixed material, Base64 and PKCS#7. Its exported names `aes128Encrypt`/`aes128Decrypt` do not describe the actual key width. Both fixed-material triples were compared against `internal/provider/kuaifan/codec.go` without recording their values. Evidence: beta `base.dll`, `CryptoUtils::aes128Encrypt @ 0x1000A910`, `aes128Decrypt @ 0x1000A570`, CBC helpers `0x10001AC0`/`0x100014C0`; `clients/20261013/kuaifan/x/control-beta-crypto.txt` and `control-beta-material-comparison.txt`, normal caller `core.dll!sub_1000FD50`, authority caller `sub_100149E0`.
+
+The beta still uses `https://ws.kuaifan.co` and `/v4/client/conf.do`, `/v4/user/login.do`, `/v4/user/refresh.do`, `/v4/invpn/getAuthority.do`, and `/v4/invpn/getLines.do`. Its common envelope has the same 17-digit timestamp shape, but generates an eight-digit nonce for all of these requests, unlike the legacy Windows profile's fixed login/authority nonce. Evidence: `x/control-beta-requests.txt`, `CommonRequest` constructor `sub_10004A40`, endpoint initializers `sub_10001100`, `sub_100025E0`, `sub_10001380`, `sub_10001400`; `x/control-beta-provenance.txt`, login initializer `sub_100022E0`; `x/control-beta-schema.txt`, common serializer `sub_100224B0`.
+
+| Element | Android 4.18.4.10 | Windows 4.7.6 beta |
+|---|---|---|
+| Control codec, fixed material and endpoints | **Not determinable** from inspected application/JNI material | **Confirmed** as above |
+| Login fields/constants | **Not determinable**; do not derive API edition from a package namespace | **Changed:** `WINDOWS/INTERNATIONAL/4.7.6`, new legacy-Windows `manufacture` field, fewer legacy fields, generated nonce |
+| Windows verifier | **Not determinable** | **Confirmed:** MAC + timestamp and the existing randomized MD5-hex/Base64 construction; not device ID |
+| Refresh | **Not determinable** | Request field names **confirmed**; numeric `userId` differs from the adapter's Windows refresh string. Beta lifecycle and legacy `1/119` status rule **not determinable** |
+| Authority | **Not determinable** | Request shape **confirmed**, nonce **changed**; response consumption **changed** to decrypted `authKey.userId` and separately stored authority token |
+| `getLines` / edition gating | **Not determinable** | Request shape **confirmed**, selectors **changed** to `WINDOWS/INTERNATIONAL/4.7.6`; prior live check selects SPEEDIN, not WIFIIN |
+
+The beta email/password login serializes `time/lang/nonce`, device fields `deviceId/mac/udid/openUdid/osVersion/manufacture/deviceType`, and `account/password/os/edition/clientVersion/promoPlatformCode/verify/loginType`. It does not emit the adapter's legacy Windows `openId/imei/uuid/idfa/signature/certification/packageName/sdkPartnerKey/sdkPartnerUserId/userId` fields. Email `loginType=4`, `deviceType=WINDOWS`, and `promoPlatformCode=speedin.cc` remain; `manufacture=Microsoft Corporation` and dynamically obtained `osVersion` differ from the adapter's fixed historical Windows fingerprint. The MAC-based verifier matches `ComputeWindowsVerify`; its beta helper also rejects timestamps shorter than 17 characters. Evidence: `x/native476/0x1001b750.txt`, login factory `sub_1001B750`; `x/control-beta-schema.txt`, `LoginRequest` serializer `sub_100233B0`; `x/control-beta-crypto.txt`, `SignUtils::makeVerifyCode @ 0x10010D60`; beta `base.dll`, `DeviceUtils::getDeviceType @ 0x1000B9C0`, `getManufacture @ 0x1000C2F0`, `getSysVersion @ 0x1000C310`; `core.dll`, `UserService::emailLogin @ 0x100678A0`.
+
+The beta does **not** use the legacy Windows `cpOrderNo` authority path or consume iOS `encryptKey/encryptType` in its authority parser. It decrypts `authKey` and extracts `userId`, but the token passed to its downloaded proxy template is the **current User/session-model token**, not the separately stored authority response token. `LoginResponse` obtains that User from response `fields`, whose `token` is stored in `User+28`; `ProxyService::start` passes `User+28` and the decrypted authority user number to `makeProxyConfig`. Evidence: `x/control-beta-schema.txt`, authority parser `sub_100149E0`; `x/control-beta-provenance.txt`, `LoginResponse` parser `sub_10015F40`, User parser `sub_100194B0`, `ProxyService::start @ 0x10061430`, `makeProxyConfig @ 0x10060940`. The token domains must not be assumed interchangeable.
+
+In the **prior live check**, a 4.3.30/`MAJOR` catalog request returned 92 WIFIIN/aes-256-cfb rows, while the same session with 4.7.6/`INTERNATIONAL` returned 92 SPEEDIN/aes-128-gcm rows. This supports retaining the working historical profile; changing only its advertised edition/version is not a compatible transport upgrade. It does not isolate edition versus version as the cause or validate a new beta login. The actual beta selectors are independently visible in `x/native476/0x1004d270.txt`, `LineViewService::getLine @ 0x1004D270`. No complete edition matrix or minimum client-version gate was recovered. `THIRD` remains the captured iOS profile, `MAJOR` the legacy Windows profile, and `INTERNATIONAL` the recovered beta profile; Android's `cc.oasis.minor1` resource namespace does not establish an API `MINOR` edition.
+
+### WIFIIN data plane and limits
+
+| Element | Android native core | Beta retained WIFIIN core |
+|---|---|---|
+| TCP `0x03`, BE16 IV+ciphertext length, trailing clear port | **Confirmed** | **Confirmed**, not proof of beta selection |
+| UOT `0x23` and continuous stream | **Confirmed** | **Confirmed**, not the beta's selected provider |
+| AES-256-CFB, unsalted MD5-chain 32-byte key, directional 16-byte IV | **Confirmed** | **Confirmed** |
+| Successful plaintext `00 00 00` ACK before response IV/ciphertext | **Confirmed** in server success path | **Confirmed** in server success path |
+| Seven-field pipe-separated provider extension grammar | **Confirmed**; exact newest outgoing identity constants unknown | **Confirmed** in retained parser; newest emitted WIFIIN identity constants unknown |
+| UOT address variants | IPv4 framing **confirmed**; decoder requires ATYP `0x01` | Same IPv4-only reference decoder |
+
+Android evidence is in `x/native-go/`: `ReadAuthHeader @ 0xB11760` (`0xb11760.txt`), `PasswordToCipherKey @ 0xB0FF20`, CFB stream functions `0xB0E230/0xB0E4B0/0xB0F0F0/0xB0F7B0`, `(*Server).handleConnection @ 0xB13DA0`, `TransUdpToTcpPacket @ 0xB12890`, and `TransTcpToUdpPacket @ 0xB12CA0`. Beta evidence is in `x/wifiin-beta-compatibility.txt` from `x/win476/app/proxy.exe`: `ReadAuthHeader @ 0x117C5E0`, `PasswordToCipherKey @ 0x117AC80`, CFB stream functions `0x1179DF0/0x117A3E0`, `WriteAuthAnswer @ 0x117D760`, `(*Server).handleConnection @ 0x117EB00`, and UOT conversions `0x117D820/0x117DB70`. These are WIFIIN implementation findings, not a reinterpretation of SPEEDIN wire formats.
+
+The native UOT converters confirm the IPv4 body format (length, ATYP 1, address, port, two-byte flow identifier, payload) but explicitly reject other ATYP values. The adapter's `wifiin/udp.go`, `udpAddressLength`, also accepts domain and IPv6 variants; production-server support for those extensions is **not determinable** from this review. Likewise, existing `ProviderExtensionForProfile` identity constants remain historical rather than independently re-established as newest outgoing-client values.
+
+Android control-plane unknowns are substantial: the inspected application namespace contains resource code rather than login/API implementations, encrypt/decrypt JNI entry points delegate to `com/wifiin/encryption/dc` selectors, and `JNI_getVerifyCode @ 0x8B88` invokes an indirect helper. Neither native WIFIIN presence nor the adjacent Android/iOS version numbers establishes the Android request schema, crypto constants, edition, refresh policy, or authority mapping. Evidence: `x/jadx/sources/cc/oasis/minor1/R.java`, `x/native-go/0x8164.txt`, `0x8420.txt`, and `0x8b88.txt`.
+
 ## External references
 
 - [KuaiFan official site](https://www.kuaifan.co/) — Fanster marketing claim.
