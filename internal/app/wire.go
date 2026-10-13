@@ -21,6 +21,7 @@ import (
 	"github.com/oshinop/chinadapter/internal/provider"
 	"github.com/oshinop/chinadapter/internal/provider/kuaifan"
 	"github.com/oshinop/chinadapter/internal/provider/quickfox"
+	"github.com/oshinop/chinadapter/internal/provider/transocks"
 	"github.com/oshinop/chinadapter/internal/socks"
 	"github.com/oshinop/chinadapter/internal/state"
 	"github.com/oshinop/chinadapter/internal/store"
@@ -96,9 +97,21 @@ func NewDaemon(cfg config.Config, stateDirectory, version string) (result *Daemo
 	if err != nil {
 		return nil, err
 	}
+	transocksClient, err := transocks.NewClient(transocks.Config{RequestTimeout: cfg.Provider.RequestTimeout.Value()})
+	if err != nil {
+		return nil, err
+	}
+	transocksDriver, err := transocks.NewDriver(transocks.DriverConfig{Client: transocksClient})
+	if err != nil {
+		return nil, err
+	}
+	transocksSS, transocksTrojan := transocks.NewTransports(transocksClient)
 	providers, err := provider.NewRegistry(
-		[]provider.Driver{kuaifanDriver, quickfoxDriver},
-		[]provider.Transport{kuaifan.NewTransport(), quickfox.NewTransport()},
+		[]provider.Driver{kuaifanDriver, quickfoxDriver, transocksDriver},
+		[]provider.Transport{
+			kuaifan.NewTransport(), kuaifan.NewSPEEDINTransport(), quickfox.NewTransport(),
+			transocksSS, transocksTrojan,
+		},
 	)
 	if err != nil {
 		return nil, err
@@ -142,7 +155,7 @@ func NewDaemon(cfg config.Config, stateDirectory, version string) (result *Daemo
 		Manager: manager, Store: store, Providers: providerCoordinator, Subscriptions: subscriptionService,
 		Credentials: credentialCoordinator, MutationMu: mutationMu, SocksAddress: proxyAddress, HTTPAddress: managementAddress,
 		Version: version, StartedAt: startedAt,
-		RefreshEvery: cfg.Provider.RefreshInterval.Value(), ProbeTimeout: cfg.Proxy.DialTimeout.Value(),
+		RefreshEvery: cfg.Provider.RefreshInterval.Value(), ProbeTimeout: cfg.Proxy.DialTimeout.Value(), Transports: providers,
 		AccountRefresh: func(_ provider.ID, err error) {
 			if err != nil {
 				// Provider text may contain secrets; emit only its classification.

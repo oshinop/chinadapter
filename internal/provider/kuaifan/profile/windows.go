@@ -1,26 +1,28 @@
 package profile
 
 import (
+	"crypto/rand"
 	"encoding/hex"
+	"fmt"
 	"io"
 	"strings"
 )
 
 const (
-	WindowsUserAgent      = "SPEEDIN"
-	WindowsOS             = "WINDOWS"
-	WindowsEdition        = "MAJOR"
-	WindowsOSVersion      = "10.0"
-	WindowsClientVersion  = "4.3.30"
-	WindowsPackageName    = "speedin"
-	WindowsPromoPlatform  = "speedin.cc"
-	WindowsDeviceType     = "WINDOWS"
-	WindowsFixedNonce     = "07531556"
-	WindowsTunnelPassword = "wifiin1234"
-	WindowsTunnelMethod   = "aes-256-cfb"
+	WindowsUserAgent = "SPEEDIN"
+	WindowsOS        = "WINDOWS"
+	WindowsEdition   = "INTERNATIONAL"
+	// WindowsOSVersion is a synthetic Windows product version; no host hardware
+	// or host OS fingerprint is read by the adapter.
+	WindowsOSVersion     = "10.0"
+	WindowsManufacture   = "Microsoft Corporation"
+	WindowsClientVersion = "4.7.6"
+	WindowsPromoPlatform = "speedin.cc"
+	WindowsDeviceType    = "WINDOWS"
+	WindowsTunnelMethod  = "aes-128-gcm"
 )
 
-// Windows is the recovered Windows 4.3.30 wire profile.
+// Windows is the recovered Windows 4.7.6 beta INTERNATIONAL wire profile.
 type Windows struct{}
 
 func (Windows) ID() ID                         { return WindowsID }
@@ -28,48 +30,35 @@ func (Windows) UserAgent() string              { return WindowsUserAgent }
 func (Windows) ConfigFields() any              { return map[string]any{"os": WindowsOS} }
 func (Windows) RequiresPostLoginRefresh() bool { return false }
 func (Windows) ValidateLine(provider, password string) (bool, error) {
-	switch provider {
-	case "WIFIIN":
-		if password != WindowsTunnelPassword {
-			return false, ErrInvalidLine
-		}
-		return true, nil
-	case "WS":
-		return false, nil
-	default:
+	if provider != "SPEEDIN" {
 		return false, nil
 	}
+	if password == "" || !withinLimit(password) {
+		return false, ErrInvalidLine
+	}
+	return true, nil
 }
 
-// WindowsLoginFields is exactly the recovered Windows email/password schema.
+// WindowsLoginFields is exactly the recovered beta email/password schema.
 type WindowsLoginFields struct {
-	OpenID            *string `json:"openId"`
-	Account           string  `json:"account"`
-	LoginType         int     `json:"loginType"`
-	Password          string  `json:"password"`
-	DeviceID          string  `json:"deviceId"`
-	MAC               string  `json:"mac"`
-	IMEI              string  `json:"imei"`
-	UDID              string  `json:"udid"`
-	OpenUDID          string  `json:"openUdid"`
-	UUID              string  `json:"uuid"`
-	IDFA              string  `json:"idfa"`
-	OS                string  `json:"os"`
-	OSVersion         string  `json:"osVersion"`
-	DeviceType        string  `json:"deviceType"`
-	ClientVersion     string  `json:"clientVersion"`
-	PromoPlatformCode string  `json:"promoPlatformCode"`
-	Time              string  `json:"time"`
-	Verify            string  `json:"verify"`
-	Signature         string  `json:"signature"`
-	Certification     string  `json:"certification"`
-	PackageName       string  `json:"packageName"`
-	Lang              string  `json:"lang"`
-	SDKPartnerKey     string  `json:"sdkPartnerKey"`
-	SDKPartnerUserID  string  `json:"sdkPartnerUserId"`
-	Edition           string  `json:"edition"`
-	Nonce             string  `json:"nonce"`
-	UserID            *int32  `json:"userId"`
+	Time              string `json:"time"`
+	Lang              string `json:"lang"`
+	Nonce             string `json:"nonce"`
+	DeviceID          string `json:"deviceId"`
+	MAC               string `json:"mac"`
+	UDID              string `json:"udid"`
+	OpenUDID          string `json:"openUdid"`
+	OSVersion         string `json:"osVersion"`
+	Manufacture       string `json:"manufacture"`
+	DeviceType        string `json:"deviceType"`
+	Account           string `json:"account"`
+	Password          string `json:"password"`
+	OS                string `json:"os"`
+	Edition           string `json:"edition"`
+	ClientVersion     string `json:"clientVersion"`
+	PromoPlatformCode string `json:"promoPlatformCode"`
+	Verify            string `json:"verify"`
+	LoginType         int    `json:"loginType"`
 }
 
 // ClearPassword drops the transient request-field reference after encoding.
@@ -82,6 +71,9 @@ func (fields *WindowsLoginFields) ClearPassword() {
 // ComputeWindowsVerify implements the recovered Windows login verifier over
 // the synthetic MAC and request timestamp.
 func ComputeWindowsVerify(mac, timestamp string, randomness io.Reader) (string, error) {
+	if len(timestamp) < 17 {
+		return "", ErrInvalidVerifyInput
+	}
 	return computeVerify(mac, timestamp, randomness, validWindowsMAC)
 }
 
@@ -95,17 +87,24 @@ func (Windows) BuildLoginFields(input LoginInput, timestamp, language string, ra
 	if err != nil {
 		return nil, err
 	}
+	if randomness == nil {
+		randomness = rand.Reader
+	}
+	nonce, err := RandomInt(randomness, 100000000)
+	if err != nil {
+		return nil, fmt.Errorf("control profile: generate nonce: %w", err)
+	}
 	verify, err := ComputeWindowsVerify(DefaultSyntheticMAC, timestamp, randomness)
 	if err != nil {
 		return nil, err
 	}
 	return &WindowsLoginFields{
 		Account: input.Account, LoginType: 4, Password: input.Password, DeviceID: deviceID,
-		MAC: DefaultSyntheticMAC, UDID: deviceID, OpenUDID: deviceID, UUID: deviceID, IDFA: deviceID,
-		OS: WindowsOS, OSVersion: WindowsOSVersion, DeviceType: WindowsDeviceType,
+		MAC: DefaultSyntheticMAC, UDID: deviceID, OpenUDID: deviceID,
+		OS: WindowsOS, OSVersion: WindowsOSVersion, Manufacture: WindowsManufacture, DeviceType: WindowsDeviceType,
 		ClientVersion: WindowsClientVersion, PromoPlatformCode: WindowsPromoPlatform,
-		Time: timestamp, Verify: verify, PackageName: WindowsPackageName, Lang: language,
-		Edition: WindowsEdition, Nonce: WindowsFixedNonce,
+		Time: timestamp, Verify: verify, Lang: language,
+		Edition: WindowsEdition, Nonce: fmt.Sprintf("%08d", nonce),
 	}, nil
 }
 

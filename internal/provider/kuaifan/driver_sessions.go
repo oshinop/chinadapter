@@ -24,6 +24,9 @@ func (driver *Driver) loginBoth(ctx context.Context, input EmailLogin) ([2]Login
 	})
 }
 
+// The persisted state deliberately stores protocol-neutral login tokens. Legacy
+// Windows WIFIIN sessions migrate in place on a successful beta refresh; until
+// then the caller's complete prior generation remains unchanged.
 type driverState struct {
 	IOS     storedLoginSession `json:"ios"`
 	Windows storedLoginSession `json:"windows"`

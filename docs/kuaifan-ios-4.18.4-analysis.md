@@ -6,7 +6,7 @@ This report analyzes the supplied `full_auth_fetch_flows` capture, iOS 4.18.4 IP
 
 The missing catalog entries were caused by the adapter's legacy macOS request profile. The captured iOS profile is `IOS` / `THIRD` / `4.18.4`; three identical `getLines.do` responses contain 31 groups and 167 lines, including five music/video lines in group `2015` and four game lines in group `300`.
 
-No captured or statically recoverable evidence defines a second Fanster wire protocol. KuaiFan markets “Fanster™” as its proprietary protocol, but every captured line identifies its provider as `WIFIIN`, and every line uses `aes-256-cfb`. The implementable data plane therefore remains the observed WIFIIN framing under KuaiFan's Fanster branding. Adding a guessed second transport would be unsafe and unauthenticated. A tunnel packet capture or a decrypted packet-tunnel executable is required to establish another wire format.
+The iOS capture alone does not define a second Fanster wire protocol: all its lines identify `WIFIIN` and `aes-256-cfb`. Its implemented data plane remains the observed WIFIIN framing under KuaiFan's Fanster branding. The October Windows 4.7.6 beta review separately recovers SPEEDIN, selected by `WINDOWS/INTERNATIONAL/4.7.6`; the adapter now implements that Windows profile rather than treating a marketing name as a protocol selector. See the verification and cutover sections below.
 
 ## Evidence integrity
 
@@ -76,7 +76,7 @@ The supplied Windows `speedin.exe` is a .NET assembly protected by SmartAssembly
 4. MD5 the UTF-8 bytes, render the digest as lower-case hexadecimal, then Base64-encode that hexadecimal text.
 5. At Base64 offset 10, insert three random Base64-alphabet characters followed by the alphabet character whose index is one less than the split position.
 
-The Windows request builder calls this verifier with its stored `invpn_userGuid` as `deviceId`; it does not hash the MAC for `verify`. The adapter now implements that Windows profile without reading host hardware: it converts the protected random 32-hex installation ID to an RFC 4122-shaped GUID and retains the documented synthetic MAC. The iOS profile keeps its separate SHA-1-shaped pseudonymous identifier. Live control-plane verification accepted both hardware-independent profiles.
+The historical .NET Windows request builder calls this verifier with its stored `invpn_userGuid` as `deviceId`. The 4.7.6 beta instead passes the MAC slot, as traced in the October verification below; the current adapter follows that beta caller. It retains a synthetic MAC and converts the protected random 32-hex installation ID to an RFC 4122-shaped GUID without reading host hardware. The iOS profile keeps its separate SHA-1-shaped pseudonymous identifier.
 
 ### Required refresh
 
@@ -165,18 +165,22 @@ internal/provider/kuaifan/
   profile/
     profile.go        shared immutable profile contract and verifier primitive
     ios.go            iOS 4.18.4 constants, login schema, and verifier
-    windows.go        Windows 4.3.30 constants, login schema, and verifier
+    windows.go        Windows 4.7.6 beta INTERNATIONAL constants and login schema
   codec.go            shared control-plane compatibility encryption
-  refresh.go          KuaiFan driver: dual-profile login/refresh/catalog transaction
-  transport.go        authority encoder and kuaifan-wifiin transport adapter
-  wifiin/             observed Fanster-branded WIFIIN TCP and UDP-over-TCP wire
+  driver*.go          KuaiFan dual-profile login/refresh/catalog transaction
+  catalog.go          profile-specific opaque authorities and protocol identities
+  transport.go        kuaifan-wifiin transport adapter
+  wifiin/             observed iOS WIFIIN TCP and UDP-over-TCP wire
+  speedin_authority.go  node-keyed Windows SPEEDIN credential contract
+  speedin_transport.go kuaifan-speedin transport adapter
+  speedin/            recovered Windows SPEEDIN AEAD wire
 ```
 
-`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; only `internal/provider/kuaifan/transport.go` and `wifiin/` decode KuaiFan authority or implement its wire protocol.
+`internal/app` supplies transient credentials and protected installation randomness through the generic provider driver contract. `internal/store` persists the KuaiFan snapshot and its opaque profile authorities without interpreting them. `internal/socks` dispatches each immutable tunnel pin through the protocol registry; KuaiFan's WIFIIN and SPEEDIN adapters decode only their matching protocol authorities.
 
 ## Verification against Android 4.18.4.10 and Windows 4.7.6 beta (2026-10)
 
-The full comparison matrices and file/function evidence index are in the October KuaiFan review, kept with the client workspace outside this repository (`clients/20261013/kuaifan/REVIEW.md`; `x/...` paths below are relative to that directory). The newer SPEEDIN and Hysteria2 transports the beta selects are specified in [kuaifan-speedin-hysteria2-analysis.md](kuaifan-speedin-hysteria2-analysis.md). This verification uses the supplied newest Android APK and Windows beta, recovered static code, and the **prior live check** supplied with the review assignment. No new login, API/tunnel probe, or code change was made. Static presence of a receiver is not proof that the newest client selects it or that a production server accepts every extension.
+The full comparison matrices and file/function evidence index are in the October KuaiFan review, kept with the client workspace outside this repository (`clients/20261013/kuaifan/REVIEW.md`; `x/...` paths below are relative to that directory). SPEEDIN and Hysteria2 are specified in [kuaifan-speedin-hysteria2-analysis.md](kuaifan-speedin-hysteria2-analysis.md). The original review used recovered static code and the **prior live check**, without a fresh probe. The later adapter cutover below adopts the recovered beta control profile and distinguishes its fresh control-plane verification from tunnel interoperability. Static presence of a receiver is not proof of production selection or support for every extension.
 
 ### Control plane
 
@@ -197,7 +201,7 @@ The beta email/password login serializes `time/lang/nonce`, device fields `devic
 
 The beta does **not** use the legacy Windows `cpOrderNo` authority path or consume iOS `encryptKey/encryptType` in its authority parser. It decrypts `authKey` and extracts `userId`, but the token passed to its downloaded proxy template is the **current User/session-model token**, not the separately stored authority response token. `LoginResponse` obtains that User from response `fields`, whose `token` is stored in `User+28`; `ProxyService::start` passes `User+28` and the decrypted authority user number to `makeProxyConfig`. Evidence: `x/control-beta-schema.txt`, authority parser `sub_100149E0`; `x/control-beta-provenance.txt`, `LoginResponse` parser `sub_10015F40`, User parser `sub_100194B0`, `ProxyService::start @ 0x10061430`, `makeProxyConfig @ 0x10060940`. The token domains must not be assumed interchangeable.
 
-In the **prior live check**, a 4.3.30/`MAJOR` catalog request returned 92 WIFIIN/aes-256-cfb rows, while the same session with 4.7.6/`INTERNATIONAL` returned 92 SPEEDIN/aes-128-gcm rows. This supports retaining the working historical profile; changing only its advertised edition/version is not a compatible transport upgrade. It does not isolate edition versus version as the cause or validate a new beta login. The actual beta selectors are independently visible in `x/native476/0x1004d270.txt`, `LineViewService::getLine @ 0x1004D270`. No complete edition matrix or minimum client-version gate was recovered. `THIRD` remains the captured iOS profile, `MAJOR` the legacy Windows profile, and `INTERNATIONAL` the recovered beta profile; Android's `cc.oasis.minor1` resource namespace does not establish an API `MINOR` edition.
+In the **prior live check**, a 4.3.30/`MAJOR` catalog request returned 92 WIFIIN/aes-256-cfb rows, while the same session with 4.7.6/`INTERNATIONAL` returned 92 SPEEDIN/aes-128-gcm rows. Changing only the advertised selectors is therefore not a compatible transport upgrade: the current adapter changes the request schema, authority mapping and transport identity together. This comparison does not isolate edition versus version as the cause or itself validate a beta login. Static selectors are independently visible in `x/native476/0x1004d270.txt`, `LineViewService::getLine @ 0x1004D270`. No complete edition matrix or minimum client-version gate was recovered. `THIRD` remains the captured iOS profile; `MAJOR` is historical Windows, replaced by the recovered beta `INTERNATIONAL` profile. Android's resource namespace does not establish an API edition.
 
 ### WIFIIN data plane and limits
 
@@ -215,6 +219,21 @@ Android evidence is in `x/native-go/`: `ReadAuthHeader @ 0xB11760` (`0xb11760.tx
 The native UOT converters confirm the IPv4 body format (length, ATYP 1, address, port, two-byte flow identifier, payload) but explicitly reject other ATYP values. The adapter's `wifiin/udp.go`, `udpAddressLength`, also accepts domain and IPv6 variants; production-server support for those extensions is **not determinable** from this review. Likewise, existing `ProviderExtensionForProfile` identity constants remain historical rather than independently re-established as newest outgoing-client values.
 
 Android control-plane unknowns are substantial: the inspected application namespace contains resource code rather than login/API implementations, encrypt/decrypt JNI entry points delegate to `com/wifiin/encryption/dc` selectors, and `JNI_getVerifyCode @ 0x8B88` invokes an indirect helper. Neither native WIFIIN presence nor the adjacent Android/iOS version numbers establishes the Android request schema, crypto constants, edition, refresh policy, or authority mapping. Evidence: `x/jadx/sources/cc/oasis/minor1/R.java`, `x/native-go/0x8164.txt`, `0x8420.txt`, and `0x8b88.txt`.
+
+### Adapter Windows beta cutover
+
+The Windows adapter now sends the exact 18-field beta email/password shape above with generated eight-digit nonces, numeric refresh `userId`, and `WINDOWS/INTERNATIONAL/4.7.6` catalog selectors. It uses `manufacture=Microsoft Corporation` and a synthetic `osVersion=10.0`; unlike the native Windows client, it does not inspect persisted Windows device settings or the host OS. The MAC-based verifier enforces the beta's minimum 17-character timestamp. The iOS request profile, post-login refresh, WIFIIN authority and cipher remain unchanged.
+
+Windows authority parsing decrypts `authKey.userId`, validates it against the session, and keeps the returned authority token separate. The opaque `windows` authority for `kuaifan-speedin` uses the **current session token**, including its rotated refresh value, and node-keyed line passwords. Eligible catalog rows must have `provider=SPEEDIN`, `method=aes-128-gcm`, and a bounded nonempty password. Other providers and explicitly different cipher methods remain ineligible metadata; a SPEEDIN row with a missing/invalid method, or a supported-cipher row with a missing/invalid password, fails the catalog transaction. Conflicting passwords for the same canonical endpoint fail rather than selecting an arbitrary credential. No secret catalog fields enter `provider.Node`.
+
+Existing stored Windows WIFIIN refresh state **migrates on the next successful refresh**, without a password login: its persisted fields are protocol-neutral user IDs and login tokens. Both refreshed profiles must still identify the same user. The new complete snapshot replaces Windows WIFIIN authority/nodes with SPEEDIN authority/nodes atomically; a failed refresh or catalog fetch leaves the prior generation intact (rotated refresh tokens may be returned separately under the existing driver contract). Since protocol is part of canonical node identity, Windows node IDs and local SOCKS usernames change at that successful cutover. A server-rejected historical token follows the existing session-rejection behavior and may require a clean login; no compatibility transport shim is retained.
+
+Remaining evidence gaps are the native beta's complete refresh lifecycle and `1/119` status semantics, its dynamically sourced device `osVersion`, and the minimum edition/version gate. Existing `1/119` Windows login/refresh acceptance and complete-login VIP parsing are retained, not claimed as a fully recovered beta lifecycle. The separate SPEEDIN transport report covers tunnel interoperability; successful control-plane validation alone does not prove data-plane connectivity.
+
+Fresh control-plane verification on 2026-10-13 used exactly one real `Driver.Login` invocation (the driver's separate iOS and Windows profile logins), followed by one `Driver.Refresh`. Both complete snapshots validated: 152 deduplicated iOS WIFIIN nodes and 86 deduplicated Windows SPEEDIN nodes, two protocol-matched authorities, and 86 canonical per-node `aes-128-gcm` passwords in the Windows authority. The reused refreshed Windows session independently returned 30 groups and 92 SPEEDIN catalog rows for the Hysteria2 investigation; endpoint deduplication explains the 86 published Windows nodes. Current session-token binding and node-keyed credentials were checked without printing credentials, tokens, account identifiers or passwords. The throwaway `liveprobe` test was deleted; this check did not open a data-plane tunnel.
+
+`go test -race -count=1 ./internal/provider/kuaifan/...` passed after the profile/catalog/tests cutover, including the unchanged iOS and WIFIIN packages. The permanent tests cover the beta login field set and verifier, generated nonces, numeric refresh user IDs, cipher/password eligibility and malformed rows, decrypted-authority failures and user binding, canonical per-node password conflicts, current-session-token selection, protocol-specific node identity, legacy-state migration and failed-refresh preservation.
+
 
 ## External references
 

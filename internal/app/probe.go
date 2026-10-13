@@ -34,6 +34,10 @@ func (r *Runtime) Probe(ctx context.Context, nodeID string) (web.ProbeResult, er
 		return web.ProbeResult{}, &problemError{cause: errors.New("node ineligible"), code: "node_ineligible", status: http.StatusConflict}
 	}
 	target := probeTarget{id: node.ID, selector: node.Selector, provider: string(node.Provider), host: node.Host, port: node.Port}
+	address, err := r.probeAddress(current, node)
+	if err != nil {
+		return web.ProbeResult{}, &problemError{cause: err, code: "probe_unavailable", status: http.StatusConflict}
+	}
 	select {
 	case r.probeSlots <- struct{}{}:
 		defer func() { <-r.probeSlots }()
@@ -44,7 +48,7 @@ func (r *Runtime) Probe(ctx context.Context, nodeID string) (web.ProbeResult, er
 	probeCtx, cancel := context.WithTimeout(ctx, r.probeTimeout)
 	defer cancel()
 	started := r.now()
-	connection, dialErr := r.dial(probeCtx, "tcp", net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port))))
+	connection, dialErr := r.dial(probeCtx, "tcp", address)
 	finished := r.now().UTC()
 	latency := finished.Sub(started)
 	if latency < 0 {
@@ -85,6 +89,27 @@ func (r *Runtime) Probe(ctx context.Context, nodeID string) (web.ProbeResult, er
 		return result, tcpProbeProblem(dialErr, probeCtx.Err())
 	}
 	return result, nil
+}
+
+// probeAddress is the node's route address unless its transport implements
+// provider.ProbeAddresser, whose stable route is an identity, not an endpoint.
+func (r *Runtime) probeAddress(current *state.RuntimeSnapshot, node state.Node) (string, error) {
+	route := net.JoinHostPort(node.Host, strconv.Itoa(int(node.Port)))
+	// Without a registered ProbeAddresser the route itself is dialable.
+	var addresser provider.ProbeAddresser
+	if r.transports != nil {
+		if transport, err := r.transports.Transport(node.Protocol); err == nil {
+			addresser, _ = transport.(provider.ProbeAddresser)
+		}
+	}
+	if addresser == nil {
+		return route, nil
+	}
+	authority, ok := current.Authority(node)
+	if !ok {
+		return "", errors.New("app: node authority unavailable")
+	}
+	return addresser.ProbeAddress(authority.Data, node.Host, node.Port)
 }
 
 type probeTarget struct {

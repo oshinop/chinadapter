@@ -5,6 +5,7 @@ import (
 	"context"
 	"crypto/x509"
 	"encoding/json"
+	"errors"
 	"fmt"
 	"io"
 	"net/http"
@@ -21,15 +22,17 @@ func TestWindowsLineValidationRetainsUnsupportedWSAsIneligible(t *testing.T) {
 	fields := windowsRawFields(t, map[string]any{
 		"groups": []any{map[string]any{"id": "g", "name": "group"}},
 		"lines": []any{
-			map[string]any{"host": "wifiin.example", "port": 11000, "provider": "WIFIIN", "password": wireprofile.WindowsTunnelPassword, "groupId": "g"},
+			map[string]any{"host": "speedin.example", "port": 11000, "provider": "SPEEDIN", "method": "aes-128-gcm", "password": "per-line-password", "groupId": "g"},
 			map[string]any{"host": "ws.example", "port": 12000, "provider": "WS", "groupId": "g"},
+			map[string]any{"host": "legacy.example", "port": 11000, "provider": "WIFIIN", "groupId": "g"},
+			map[string]any{"host": "other-cipher.example", "port": 11000, "provider": "SPEEDIN", "method": "aes-256-gcm", "groupId": "g"},
 		},
 	})
 	lines, err := validateLinesForProfile(fields, "zh-CN", windowsClientProfile{})
 	if err != nil {
 		t.Fatal(err)
 	}
-	if len(lines.Lines) != 2 || !lines.Lines[0].Eligible || lines.Lines[1].Eligible {
+	if len(lines.Lines) != 4 || !lines.Lines[0].Eligible || lines.Lines[1].Eligible || lines.Lines[2].Eligible || lines.Lines[3].Eligible || lines.Lines[0].Password != "per-line-password" || lines.Lines[0].Method != "aes-128-gcm" {
 		t.Fatalf("Windows line eligibility = %#v", lines.Lines)
 	}
 }
@@ -57,6 +60,10 @@ func TestWindowsRequestWireNonces(t *testing.T) {
 	}
 	requests := make(chan wireRequest, 5)
 	codec := NormalCodec()
+	authKey, err := AuthorityCodec().EncodeJSON(map[string]any{"userId": 7})
+	if err != nil {
+		t.Fatal(err)
+	}
 	server := httptest.NewTLSServer(http.HandlerFunc(func(writer http.ResponseWriter, request *http.Request) {
 		body, err := io.ReadAll(request.Body)
 		if err != nil {
@@ -76,7 +83,7 @@ func TestWindowsRequestWireNonces(t *testing.T) {
 		case "/v4/user/login.do", "/v4/user/refresh.do":
 			responseFields = map[string]any{"userId": 7, "token": "login", "isVip": false, "vipEndTime": 0}
 		case "/v4/invpn/getAuthority.do":
-			responseFields = map[string]any{"token": "provider", "cpOrderNo": "order"}
+			responseFields = map[string]any{"token": "provider", "authKey": string(authKey)}
 		case "/v4/invpn/getLines.do":
 			responseFields = map[string]any{"groups": []any{}, "lines": []any{}}
 		}
@@ -130,15 +137,11 @@ func TestWindowsRequestWireNonces(t *testing.T) {
 		if err != nil || value < 0 || value > 99999999 {
 			t.Fatalf("%s nonce is not eight decimal digits: %q", request.route, nonce)
 		}
-		switch request.route {
-		case "/v4/user/login.do", "/v4/invpn/getAuthority.do":
-			if nonce != wireprofile.WindowsFixedNonce {
-				t.Fatalf("%s recovered nonce = %q, want %q", request.route, nonce, wireprofile.WindowsFixedNonce)
-			}
-		case "/v4/user/refresh.do", "/v4/invpn/getLines.do":
-			if value < 10000000 {
-				t.Fatalf("%s generated Windows nonce lost its leading digit: %q", request.route, nonce)
-			}
+		if request.route == "/v4/user/refresh.do" && request.fields["userId"] != float64(7) {
+			t.Fatal("beta refresh userId must be numeric")
+		}
+		if request.route == "/v4/invpn/getLines.do" && (request.fields["os"] != "WINDOWS" || request.fields["edition"] != "INTERNATIONAL" || request.fields["clientVersion"] != "4.7.6") {
+			t.Fatal("beta catalog selectors differ")
 		}
 		if request.fields["lang"] != "en-US" {
 			t.Fatalf("%s language = %v", request.route, request.fields["lang"])
@@ -164,10 +167,14 @@ func TestUnknownLineProvidersAreIneligible(t *testing.T) {
 	t.Parallel()
 	for _, profile := range []providerProfile{iosClientProfile{}, windowsClientProfile{}} {
 		t.Run(fmt.Sprint(profile.id()), func(t *testing.T) {
+			upstream, method := "WIFIIN", "aes-256-cfb"
+			if profile.id() == wireprofile.WindowsID {
+				upstream, method = "SPEEDIN", "aes-128-gcm"
+			}
 			fields := windowsRawFields(t, map[string]any{
 				"groups": []any{map[string]any{"id": "g", "name": "group"}},
 				"lines": []any{
-					map[string]any{"host": "wifiin.example", "port": 11000, "provider": "WIFIIN", "password": wireprofile.WindowsTunnelPassword, "groupId": "g"},
+					map[string]any{"host": "supported.example", "port": 11000, "provider": upstream, "method": method, "password": "per-line-password", "groupId": "g"},
 					map[string]any{"host": "other.example", "port": 12000, "provider": "FUTURE", "groupId": "g"},
 				},
 			})
@@ -176,6 +183,18 @@ func TestUnknownLineProvidersAreIneligible(t *testing.T) {
 				t.Fatalf("line eligibility = %#v, %v", lines, err)
 			}
 		})
+	}
+}
+
+func TestWindowsEligibleLineRequiresCipherAndPassword(t *testing.T) {
+	for _, fields := range []map[string]any{
+		{}, {"method": "aes-128-gcm"}, {"method": "aes-128-gcm", "password": ""},
+		{"method": "aes-128-gcm", "password": 7}, {"method": 7, "password": "password"},
+	} {
+		object := windowsRawFields(t, fields)
+		if eligible, err := (windowsClientProfile{}).validateLine(object, "SPEEDIN"); !errors.Is(err, ErrInvalidLine) || eligible {
+			t.Fatalf("malformed SPEEDIN row accepted: eligible=%t, error=%v", eligible, err)
+		}
 	}
 }
 

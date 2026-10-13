@@ -5,10 +5,8 @@ import (
 	"encoding/json"
 	"fmt"
 	"net/url"
-	"strconv"
 
 	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
-	"github.com/oshinop/chinadapter/internal/provider/kuaifan/wifiin"
 )
 
 type windowsClientProfile struct{ wire wireprofile.Windows }
@@ -42,13 +40,8 @@ func (windowsClientProfile) refresh(ctx context.Context, c *Client, session Logi
 	if err := c.validateSession(session); err != nil {
 		return LoginSession{}, err
 	}
-	nonce, err := c.requestNonce()
-	if err != nil {
-		return LoginSession{}, err
-	}
 	response, err := c.post(ctx, session.APIBase, "/v4/user/refresh.do", map[string]any{
-		"userId": formatUserID(session.UserID), "token": session.Token,
-		"lang": c.language, "time": c.timestamp(), "nonce": nonce,
+		"userId": session.UserID, "token": session.Token,
 	})
 	if err != nil {
 		return LoginSession{}, err
@@ -68,8 +61,7 @@ func (windowsClientProfile) fetchAuthority(ctx context.Context, c *Client, sessi
 		return Authority{}, err
 	}
 	response, err := c.post(ctx, session.APIBase, "/v4/invpn/getAuthority.do", map[string]any{
-		"userId": session.UserID, "token": session.Token, "lang": c.language,
-		"time": c.timestamp(), "nonce": wireprofile.WindowsFixedNonce,
+		"userId": session.UserID, "token": session.Token,
 	})
 	if err != nil {
 		return Authority{}, err
@@ -77,37 +69,35 @@ func (windowsClientProfile) fetchAuthority(ctx context.Context, c *Client, sessi
 	if *response.Status != 1 {
 		return Authority{}, authenticatedStatus(*response.Status)
 	}
+	authKey, err := requiredStringLimit(response.Fields, "authKey", maxAuthorityAuthKeyBytes)
+	if err != nil {
+		return Authority{}, err
+	}
 	providerToken, err := requiredString(response.Fields, "token")
 	if err != nil {
 		return Authority{}, err
 	}
-	orderID, err := requiredString(response.Fields, "cpOrderNo")
-	if err != nil {
-		return Authority{}, err
+	var decrypted struct {
+		UserID json.RawMessage `json:"userId"`
 	}
-	userIDText := formatUserID(session.UserID)
-	providerExtension, err := wifiin.ProviderExtensionForProfile(string(wireprofile.WindowsID), providerToken, orderID, userIDText)
-	if err != nil {
+	if err := c.authorityCodec.DecodeJSON([]byte(authKey), &decrypted); err != nil {
+		return Authority{}, fmt.Errorf("control: decrypt authority: %w", err)
+	}
+	userID, err := parsePositiveInt32(decrypted.UserID, true)
+	if err != nil || userID != session.UserID {
 		return Authority{}, ErrSchema
 	}
-	return Authority{
-		UserID: userIDText, OrderID: orderID, EncryptKey: wireprofile.WindowsTunnelPassword,
-		EncryptType: wireprofile.WindowsTunnelMethod, ProviderToken: providerToken, ProviderExtension: providerExtension,
-	}, nil
+	return Authority{UserID: formatUserID(userID), ProviderToken: providerToken}, nil
 }
 
 func (windowsClientProfile) fetchLines(ctx context.Context, c *Client, session LoginSession) (Lines, error) {
 	if err := c.validateSession(session); err != nil {
 		return Lines{}, err
 	}
-	nonce, err := c.requestNonce()
-	if err != nil {
-		return Lines{}, err
-	}
 	response, err := c.post(ctx, session.APIBase, "/v4/invpn/getLines.do", map[string]any{
 		"userId": session.UserID, "token": session.Token, "os": wireprofile.WindowsOS,
 		"time": c.timestamp(), "clientVersion": wireprofile.WindowsClientVersion,
-		"edition": wireprofile.WindowsEdition, "lang": c.language, "nonce": nonce,
+		"edition": wireprofile.WindowsEdition,
 	})
 	if err != nil {
 		return Lines{}, err
@@ -119,25 +109,26 @@ func (windowsClientProfile) fetchLines(ctx context.Context, c *Client, session L
 }
 
 func (p windowsClientProfile) validateLine(object map[string]json.RawMessage, provider string) (bool, error) {
-	password := ""
-	if provider == "WIFIIN" {
-		var err error
-		password, err = requiredString(object, "password")
-		if err != nil {
-			return false, ErrInvalidLine
-		}
+	// Other providers and supported rows with a different cipher stay metadata
+	// only. A SPEEDIN row must name its cipher; an eligible row also needs its
+	// own bounded, nonempty password. Never substitute WIFIIN authority keys.
+	if provider != "SPEEDIN" {
+		return false, nil
+	}
+	method, err := requiredString(object, "method")
+	if err != nil {
+		return false, ErrInvalidLine
+	}
+	if method != wireprofile.WindowsTunnelMethod {
+		return false, nil
+	}
+	password, err := requiredString(object, "password")
+	if err != nil {
+		return false, ErrInvalidLine
 	}
 	eligible, err := p.wire.ValidateLine(provider, password)
 	if err != nil {
 		return false, ErrInvalidLine
 	}
 	return eligible, nil
-}
-
-func (c *Client) requestNonce() (string, error) {
-	value, err := wireprofile.RandomInt(c.random, 90000000)
-	if err != nil {
-		return "", fmt.Errorf("control: nonce: %w", err)
-	}
-	return strconv.Itoa(10000000 + value), nil
 }

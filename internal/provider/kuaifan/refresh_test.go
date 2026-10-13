@@ -22,7 +22,10 @@ func TestDriverLoginAggregatesProfilesAndRoutesOpaqueAuthorities(t *testing.T) {
 		windowsVIP = iosVIP - 1000
 	)
 	iosAuthority := encodedAuthority(t, "1", "ios-tunnel", "ios-order")
-	windowsAuthority := encodedAuthority(t, "1", wireprofile.WindowsTunnelPassword, "windows-order")
+	windowsAuthority, err := AuthorityCodec().EncodeJSON(map[string]any{"userId": 1})
+	if err != nil {
+		t.Fatal(err)
+	}
 	var mu sync.Mutex
 	calls := make(map[string]int)
 	iosClient, windowsClient := testControlClients(t, roundTripFunc(func(request *http.Request) (*http.Response, error) {
@@ -52,15 +55,15 @@ func TestDriverLoginAggregatesProfilesAndRoutesOpaqueAuthorities(t *testing.T) {
 			}
 			return encryptedHTTPResponse(t, envelope(map[string]any{"authKey": string(authKey), "token": token, "cpOrderNo": order})), nil
 		case "/v4/invpn/getLines.do":
-			host := "ios-only.example"
+			host, upstream, method := "ios-only.example", "WIFIIN", "aes-256-cfb"
 			if windows {
-				host = "windows-only.example"
+				host, upstream, method = "windows-only.example", "SPEEDIN", "aes-128-gcm"
 			}
 			return encryptedHTTPResponse(t, envelope(map[string]any{
 				"groups": []any{map[string]any{"id": "g", "name": "group"}},
 				"lines": []any{
-					map[string]any{"host": "common.example", "port": 11000, "provider": "WIFIIN", "password": wireprofile.WindowsTunnelPassword, "groupId": "g"},
-					map[string]any{"host": host, "port": 11000, "provider": "WIFIIN", "password": wireprofile.WindowsTunnelPassword, "groupId": "g"},
+					map[string]any{"host": "common.example", "port": 11000, "provider": upstream, "method": method, "password": "shared-line-password", "groupId": "g"},
+					map[string]any{"host": host, "port": 11000, "provider": upstream, "method": method, "password": "distinct-line-password", "groupId": "g"},
 				},
 			})), nil
 		default:
@@ -82,26 +85,30 @@ func TestDriverLoginAggregatesProfilesAndRoutesOpaqueAuthorities(t *testing.T) {
 		snapshot.Account.Tier != vipTier || !snapshot.Account.SubscriptionActive || snapshot.Account.SubscriptionEndsAt.UnixMilli() != windowsVIP || !snapshot.ExpiresAt.Equal(now.Add(24*time.Hour)) {
 		t.Fatalf("aggregate snapshot = %#v", snapshot)
 	}
-	profiles := make(map[string]string, len(snapshot.Nodes))
+	profiles := make(map[string]int)
 	for _, node := range snapshot.Nodes {
-		profiles[node.Host] = node.AuthorityID
-		if node.Protocol != WIFIINProtocol {
+		profiles[node.AuthorityID]++
+		want := WIFIINProtocol
+		if node.AuthorityID == "windows" {
+			want = SPEEDINProtocol
+		}
+		if node.Protocol != want {
 			t.Fatalf("node protocol = %q", node.Protocol)
 		}
 	}
-	if !reflect.DeepEqual(profiles, map[string]string{"common.example": "ios", "ios-only.example": "ios", "windows-only.example": "windows"}) {
+	if len(snapshot.Nodes) != 4 || !reflect.DeepEqual(profiles, map[string]int{"ios": 2, "windows": 2}) {
 		t.Fatalf("profile routing = %#v", profiles)
 	}
 	iosTunnel, err := decodeTunnelAuthority(snapshot.Authorities["ios"].Data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	windowsTunnel, err := decodeTunnelAuthority(snapshot.Authorities["windows"].Data)
+	windowsTunnel, err := decodeSPEEDINAuthority(snapshot.Authorities["windows"].Data)
 	if err != nil {
 		t.Fatal(err)
 	}
-	if iosTunnel.Password != "ios-tunnel" || windowsTunnel.Password != wireprofile.WindowsTunnelPassword || iosTunnel.Extension == windowsTunnel.Extension {
-		t.Fatalf("opaque profile authorities = %#v / %#v", iosTunnel, windowsTunnel)
+	if iosTunnel.Password != "ios-tunnel" || windowsTunnel.UserID != 1 || windowsTunnel.Token != "windows-login" || windowsTunnel.Method != "aes-128-gcm" || windowsTunnel.OS != "WINDOWS" || len(windowsTunnel.Passwords) != 2 || windowsTunnel.Passwords[speedinNodeKey("common.example", 11000)] != "shared-line-password" || windowsTunnel.Passwords[speedinNodeKey("windows-only.example", 11000)] != "distinct-line-password" {
+		t.Fatal("opaque authorities must remain profile- and node-bound")
 	}
 	mu.Lock()
 	defer mu.Unlock()
@@ -130,6 +137,9 @@ func TestDriverRefreshReturnsCompleteReplacementWithoutMutatingCurrent(t *testin
 		case "/v4/invpn/getAuthority.do":
 			return encryptedHTTPResponse(t, envelope(map[string]any{"authKey": string(authKey), "token": "new-provider", "cpOrderNo": "new-order"})), nil
 		case "/v4/invpn/getLines.do":
+			if request.Header.Get("User-Agent") == wireprofile.WindowsUserAgent {
+				return encryptedHTTPResponse(t, envelope(validWindowsLineFields("new.example", "group"))), nil
+			}
 			return encryptedHTTPResponse(t, envelope(validLineFields("new.example", "group"))), nil
 		default:
 			return nil, errors.New("unexpected route")
@@ -146,7 +156,7 @@ func TestDriverRefreshReturnsCompleteReplacementWithoutMutatingCurrent(t *testin
 	if !reflect.DeepEqual(current, before) {
 		t.Fatalf("Refresh mutated caller snapshot: before=%#v after=%#v", before, current)
 	}
-	if !next.Valid() || len(next.Nodes) != 1 || next.Nodes[0].Host != "new.example" || next.Account.Display != current.Account.Display {
+	if !next.Valid() || len(next.Nodes) != 2 || next.Nodes[0].Host != "new.example" || next.Nodes[1].Protocol != SPEEDINProtocol || next.Account.Display != current.Account.Display {
 		t.Fatalf("replacement snapshot = %#v", next)
 	}
 	stored, err := decodeDriverState(next.RefreshState)
@@ -236,8 +246,8 @@ func TestNodesFromLinesDeduplicatesSharedEndpointAcrossLabels(t *testing.T) {
 	nodes, err := nodesFromLines(Lines{
 		Groups: []Group{{ID: "video", Name: "Video"}, {ID: "direct", Name: "Direct"}},
 		Lines: []Line{
-			{Host: "shared.example", Port: 11000, Provider: "WIFIIN", GroupID: "video", Eligible: true},
-			{Host: "shared.example", Port: 11000, Provider: "WIFIIN", GroupID: "direct", Eligible: true},
+			{Host: "shared.example", Port: 11000, Provider: "SPEEDIN", GroupID: "video", Eligible: true},
+			{Host: "shared.example", Port: 11000, Provider: "SPEEDIN", GroupID: "direct", Eligible: true},
 		},
 	}, wireprofile.WindowsID)
 	if err != nil {
@@ -489,7 +499,14 @@ func validRefreshFields(token string) map[string]any {
 func validLineFields(host, groupID string) map[string]any {
 	return map[string]any{
 		"groups": []any{map[string]any{"id": groupID, "name": "group"}},
-		"lines":  []any{map[string]any{"text": "line", "host": host, "port": 11000, "provider": "WIFIIN", "password": wireprofile.WindowsTunnelPassword, "groupId": groupID}},
+		"lines":  []any{map[string]any{"text": "line", "host": host, "port": 11000, "provider": "WIFIIN", "password": "wifiin1234", "groupId": groupID}},
+	}
+}
+
+func validWindowsLineFields(host, groupID string) map[string]any {
+	return map[string]any{
+		"groups": []any{map[string]any{"id": groupID, "name": "group"}},
+		"lines":  []any{map[string]any{"text": "line", "host": host, "port": 11000, "provider": "SPEEDIN", "method": "aes-128-gcm", "password": "windows-line-password", "groupId": groupID}},
 	}
 }
 

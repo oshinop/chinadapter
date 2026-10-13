@@ -6,8 +6,9 @@ import (
 	"time"
 )
 
-// DialContextFunc dials only a selected provider node. SOCKS destinations are
-// passed separately and can never fall back to a direct connection.
+// DialContextFunc dials the selected provider node or a tunnel endpoint issued
+// for that same node by its control plane. SOCKS targets never fall back to a
+// direct connection or another node.
 type DialContextFunc func(context.Context, string, string) (net.Conn, error)
 
 // Target is the destination requested by the local SOCKS client.
@@ -16,9 +17,11 @@ type Target struct {
 	Port uint16
 }
 
-// RelayRequest contains one immutable, revalidated tunnel pin. Ready must be
-// called exactly once after the provider handshake and final Admit check, before
-// application bytes are relayed.
+// RelayRequest contains one immutable, revalidated node pin. A transport may
+// resolve it through its provider control plane to a current tunnel endpoint,
+// but must dial only through Dial and must never select another node or dial
+// Target directly. Ready must be called exactly once after the provider
+// handshake and final Admit check, before application bytes are relayed.
 type RelayRequest struct {
 	Dial             DialContextFunc
 	Client           net.Conn
@@ -43,6 +46,8 @@ type PacketIO interface {
 }
 
 // DatagramRequest extends RelayRequest with an authenticated UDP association.
+// The same node/control-plane endpoint resolution rules apply: use only Dial,
+// never another node or a direct destination connection.
 type DatagramRequest struct {
 	Dial             DialContextFunc
 	Control          net.Conn
@@ -68,4 +73,12 @@ type Transport interface {
 type DatagramTransport interface {
 	Transport
 	RelayDatagrams(context.Context, DatagramRequest) error
+}
+
+// ProbeAddresser is the optional capability for transports whose node route is
+// a stable identity rather than a dialable endpoint. ProbeAddress returns the
+// host:port a TCP reachability probe should dial for the node, without opening
+// a tunnel or consuming provider session capacity.
+type ProbeAddresser interface {
+	ProbeAddress(authority []byte, nodeHost string, nodePort uint16) (string, error)
 }

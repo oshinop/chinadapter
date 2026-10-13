@@ -26,6 +26,9 @@ var (
 	ErrInvalidInput     = errors.New("provider: invalid credentials")
 	ErrLoginRejected    = errors.New("provider: login rejected")
 	ErrAccountExists    = errors.New("provider: account already exists")
+	// ErrDeviceLimit means the provider refused a new login because the
+	// account is already signed in on its maximum number of devices.
+	ErrDeviceLimit      = errors.New("provider: device limit reached")
 	ErrNoSession        = errors.New("provider: no refreshable session")
 	ErrAuthorityExpired = errors.New("provider: authority expired")
 	// ErrSessionRejected means the upstream explicitly invalidated the stored

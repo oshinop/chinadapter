@@ -47,12 +47,15 @@ type RuntimeConfig struct {
 	Credentials   *CredentialCoordinator
 	MutationMu    *sync.Mutex
 
-	SocksAddress    string
-	HTTPAddress     string
-	Version         string
-	StartedAt       time.Time
-	Now             func() time.Time
-	DialContext     func(context.Context, string, string) (net.Conn, error)
+	SocksAddress string
+	HTTPAddress  string
+	Version      string
+	StartedAt    time.Time
+	Now          func() time.Time
+	DialContext  func(context.Context, string, string) (net.Conn, error)
+	// Transports resolves a node protocol's transport so probes can honor
+	// provider.ProbeAddresser. Nil probes every node at its route address.
+	Transports      *provider.Registry
 	ProbeTimeout    time.Duration
 	RefreshEvery    time.Duration
 	AccountRefresh  func(provider.ID, error)
@@ -77,6 +80,7 @@ type Runtime struct {
 	startedAt    time.Time
 	now          func() time.Time
 	dial         func(context.Context, string, string) (net.Conn, error)
+	transports   *provider.Registry
 	probeTimeout time.Duration
 	probeSlots   chan struct{}
 
@@ -133,7 +137,7 @@ func NewRuntime(config RuntimeConfig) (*Runtime, error) {
 		subscriptions: config.Subscriptions, credentials: config.Credentials,
 		socksAddress: config.SocksAddress, httpAddress: config.HTTPAddress,
 		version:   config.Version,
-		startedAt: config.StartedAt.UTC(), now: config.Now, dial: config.DialContext,
+		startedAt: config.StartedAt.UTC(), now: config.Now, dial: config.DialContext, transports: config.Transports,
 		probeTimeout: config.ProbeTimeout, probeSlots: make(chan struct{}, config.ProbeConcurrent), mutations: mutationMu,
 		refreshEvery: config.RefreshEvery,
 		events:       newEventHub(config.EventClients, config.EventBuffer),

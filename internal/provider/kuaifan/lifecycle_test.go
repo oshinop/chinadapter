@@ -277,6 +277,9 @@ func lifecycleResponse(t *testing.T, request *http.Request, authKey []byte) *htt
 	case "/v4/invpn/getAuthority.do":
 		return encryptedHTTPResponse(t, envelope(map[string]any{"authKey": string(authKey), "token": profile + "-provider", "cpOrderNo": "new-order"}))
 	case "/v4/invpn/getLines.do":
+		if windows {
+			return encryptedHTTPResponse(t, envelope(validWindowsLineFields(profile+".example", "group")))
+		}
 		return encryptedHTTPResponse(t, envelope(validLineFields(profile+".example", "group")))
 	default:
 		t.Errorf("unexpected lifecycle route %q", request.URL.Path)

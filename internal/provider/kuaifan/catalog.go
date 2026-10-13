@@ -3,6 +3,7 @@ package kuaifan
 import (
 	"encoding/json"
 	"fmt"
+	"strconv"
 	"time"
 
 	"github.com/oshinop/chinadapter/internal/provider"
@@ -61,6 +62,14 @@ func (driver *Driver) snapshot(profiles [2]completeProfile, account provider.Acc
 		if profile.client == nil {
 			continue
 		}
+		if profile.client.Profile() == wireprofile.WindowsID {
+			authority, err := speedinAuthorityFromProfile(profile)
+			if err != nil {
+				return provider.Snapshot{}, err
+			}
+			authorities[string(wireprofile.WindowsID)] = authority
+			continue
+		}
 		encoded, err := json.Marshal(tunnelAuthority{
 			Password: profile.authority.EncryptKey, Method: profile.authority.EncryptType, Extension: profile.authority.ProviderExtension,
 		})
@@ -86,6 +95,35 @@ func (driver *Driver) snapshot(profiles [2]completeProfile, account provider.Acc
 		return provider.Snapshot{}, err
 	}
 	return snapshot, nil
+}
+
+func speedinAuthorityFromProfile(profile completeProfile) (provider.Authority, error) {
+	userID, err := strconv.ParseUint(profile.authority.UserID, 10, 64)
+	if err != nil || userID == 0 || userID != uint64(profile.session.UserID) {
+		return provider.Authority{}, ErrInvalidAuthority
+	}
+	passwords := make(map[string]string, len(profile.lines.Lines))
+	for _, line := range profile.lines.Lines {
+		if !line.Eligible {
+			continue
+		}
+		if line.Provider != "SPEEDIN" || line.Method != speedinMethodAES128GCM || line.Password == "" {
+			return provider.Authority{}, ErrInvalidLine
+		}
+		route, err := provider.Canonicalize(provider.Route{Provider: ProviderID, Protocol: SPEEDINProtocol, Host: line.Host, Port: line.Port})
+		if err != nil {
+			return provider.Authority{}, fmt.Errorf("%w: canonical SPEEDIN authority endpoint: %w", ErrSchema, err)
+		}
+		key := speedinNodeKey(route.Host, route.Port)
+		if prior, exists := passwords[key]; exists && prior != line.Password {
+			return provider.Authority{}, ErrInvalidLine
+		}
+		passwords[key] = line.Password
+	}
+	return encodeSPEEDINAuthority(speedinAuthority{
+		UserID: userID, Token: profile.session.Token, OS: speedinOS,
+		Method: speedinMethodAES128GCM, Passwords: passwords,
+	})
 }
 
 func decodeTunnelAuthority(encoded []byte) (tunnelAuthority, error) {
@@ -116,6 +154,10 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 	if profileID != wireprofile.IOSID && profileID != wireprofile.WindowsID {
 		return nil, ErrSchema
 	}
+	protocol := WIFIINProtocol
+	if profileID == wireprofile.WindowsID {
+		protocol = SPEEDINProtocol
+	}
 	groups := make(map[string]string, len(lines.Groups))
 	for _, group := range lines.Groups {
 		groups[group.ID] = group.Name
@@ -126,7 +168,7 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 		if !line.Eligible {
 			continue
 		}
-		route, err := provider.Canonicalize(provider.Route{Provider: ProviderID, Protocol: WIFIINProtocol, Host: line.Host, Port: line.Port})
+		route, err := provider.Canonicalize(provider.Route{Provider: ProviderID, Protocol: protocol, Host: line.Host, Port: line.Port})
 		if err != nil {
 			return nil, fmt.Errorf("%w: canonical node identity: %w", ErrSchema, err)
 		}
@@ -143,7 +185,7 @@ func nodesFromLines(lines Lines, profileID wireprofile.ID) ([]provider.Node, err
 			groupName = groups[line.GroupID]
 		}
 		nodes = append(nodes, provider.Node{
-			ID: id, AuthorityID: string(profileID), Protocol: WIFIINProtocol, Host: route.Host, Port: route.Port,
+			ID: id, AuthorityID: string(profileID), Protocol: protocol, Host: route.Host, Port: route.Port,
 			Name: line.Label, Group: groupName, Model: line.Model, Weight: line.Weight, Auto: line.Auto, Eligible: line.Eligible,
 		})
 	}

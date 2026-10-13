@@ -5,6 +5,8 @@ import (
 	"encoding/json"
 	"net"
 	"strings"
+
+	wireprofile "github.com/oshinop/chinadapter/internal/provider/kuaifan/profile"
 )
 
 // Group is a validated server-defined line group.
@@ -13,13 +15,16 @@ type Group struct {
 	Name string
 }
 
-// Line is a validated provider endpoint. Eligibility is profile-specific: the
-// baseline tunnel supports WIFIIN while recovered WS rows remain metadata only.
+// Line is a validated provider endpoint. Eligibility is profile-specific.
+// Method and Password contain secret per-line SPEEDIN material and must never
+// be copied to provider.Node, browser metadata or logs.
 type Line struct {
 	Label     string
 	Host      string
 	Port      uint16
 	Provider  string
+	Method    string
+	Password  string
 	GroupID   string
 	GroupName string
 	Model     string
@@ -111,6 +116,11 @@ func parseLine(object map[string]json.RawMessage, groupIDs map[string]struct{}, 
 	if err != nil {
 		return Line{}, err
 	}
+	method, password := "", ""
+	if eligible && profile.id() == wireprofile.WindowsID {
+		method, _ = requiredString(object, "method")
+		password, _ = requiredString(object, "password")
+	}
 	groupID, found := objectID(object, "groupId")
 	if !found || !withinLimit(groupID, maxGroupIDBytes) {
 		return Line{}, ErrInvalidLine
@@ -142,7 +152,7 @@ func parseLine(object map[string]json.RawMessage, groupIDs map[string]struct{}, 
 	}
 	weight, _ := integerValue(object["weight"])
 	auto, _ := booleanValue(object["auto"])
-	return Line{Label: label, Host: host, Port: port, Provider: provider, GroupID: groupID, GroupName: groupName, Model: model, Weight: weight, Auto: auto, Eligible: eligible}, nil
+	return Line{Label: label, Host: host, Port: port, Provider: provider, Method: method, Password: password, GroupID: groupID, GroupName: groupName, Model: model, Weight: weight, Auto: auto, Eligible: eligible}, nil
 }
 
 func localizedLineName(object map[string]json.RawMessage, preferredLanguage string) (string, bool, error) {

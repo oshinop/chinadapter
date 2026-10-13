@@ -17,6 +17,8 @@ export function describeError(error: unknown): string {
             return "Use a different access token of 16–128 bytes.";
         if (error.problem.code === "login_rejected")
             return "The provider rejected that email or password.";
+        if (error.problem.code === "device_limit")
+            return "The provider account is signed in on too many devices. Sign out of one in the provider's app, then try again.";
         return error.problem.detail || error.problem.title;
     }
     return "The local service did not complete that request.";

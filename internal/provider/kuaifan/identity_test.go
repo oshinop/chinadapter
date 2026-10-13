@@ -22,11 +22,26 @@ func TestNodeIDCanonicalPayloadAndLabelIndependence(t *testing.T) {
 	source.Lines[0].GroupID = "other group"
 	source.Lines[0].GroupName = "other display"
 	source.Lines[0].Label = "new line"
-	second, err := nodesFromLines(source, wireprofile.WindowsID)
+	second, err := nodesFromLines(source, wireprofile.IOSID)
 	if err != nil {
 		t.Fatal(err)
 	}
 	if len(first) != 1 || len(second) != 1 || first[0].ID != expected || second[0].ID != expected {
 		t.Fatal("display labels or account authority affect node identity")
+	}
+}
+
+func TestWindowsNodeIdentityIncludesSPEEDINProtocol(t *testing.T) {
+	source := Lines{Lines: []Line{{Host: "node.example", Port: 11000, Eligible: true}}}
+	ios, err := nodesFromLines(source, wireprofile.IOSID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	windows, err := nodesFromLines(source, wireprofile.WindowsID)
+	if err != nil {
+		t.Fatal(err)
+	}
+	if len(ios) != 1 || len(windows) != 1 || ios[0].ID == windows[0].ID || windows[0].Protocol != SPEEDINProtocol || windows[0].AuthorityID != "windows" {
+		t.Fatal("Windows beta nodes must have protocol-specific identity and authority")
 	}
 }

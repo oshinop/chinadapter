@@ -39,8 +39,8 @@ func sessionFromFields(fields map[string]json.RawMessage, base *url.URL) (LoginS
 	}, nil
 }
 
-// LoginSession is provisional credential material. It is kept only in memory
-// and must be refreshed before authority and line retrieval.
+// LoginSession is profile-bound credential material. The iOS profile requires
+// a post-login refresh; the Windows beta consumes its complete login profile.
 type LoginSession struct {
 	UserID  int32
 	Token   string

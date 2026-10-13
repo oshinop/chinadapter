@@ -9,6 +9,7 @@ import (
 	"testing/synctest"
 	"time"
 
+	"github.com/oshinop/chinadapter/internal/provider"
 	"github.com/oshinop/chinadapter/internal/state"
 )
 
@@ -65,6 +66,42 @@ func TestRuntimeProbePublishesCurrentNodeHealth(t *testing.T) {
 	}
 	if node, ok := fixture.manager.Current().NodeByID("alpha-node"); !ok || node.Health != state.NodeHealthHealthy {
 		t.Fatalf("node health=%+v ok=%v", node, ok)
+	}
+}
+
+type probeAddressTransport struct{ address string }
+
+func (probeAddressTransport) Protocol() provider.Protocol { return "alpha-native" }
+func (probeAddressTransport) RelayStream(context.Context, provider.RelayRequest) error {
+	return errors.New("not used")
+}
+func (transport probeAddressTransport) ProbeAddress(authority []byte, host string, port uint16) (string, error) {
+	if string(authority) != "tunnel-authority" || host != "127.0.0.1" || port != 8080 {
+		return "", errors.New("unexpected node")
+	}
+	return transport.address, nil
+}
+
+func TestRuntimeProbeDialsTransportProbeAddress(t *testing.T) {
+	dialed := make(chan string, 2)
+	fixture := newRuntimeFixture(t, func(_ context.Context, _, address string) (net.Conn, error) {
+		dialed <- address
+		left, right := net.Pipe()
+		_ = right.Close()
+		return left, nil
+	})
+	transports, err := provider.NewRegistry(nil, []provider.Transport{probeAddressTransport{address: "probe.example.test:7"}})
+	if err != nil {
+		t.Fatal(err)
+	}
+	fixture.runtime.transports = transports
+	for node, want := range map[string]string{"alpha-node": "probe.example.test:7", "beta-node": "127.0.0.1:8080"} {
+		if _, err := fixture.runtime.Probe(t.Context(), node); err != nil {
+			t.Fatal(err)
+		}
+		if got := <-dialed; got != want {
+			t.Fatalf("%s probe dialed %s, want %s", node, got, want)
+		}
 	}
 }
 
