@@ -56,8 +56,18 @@ func (r *Runtime) Status(context.Context) (web.Status, error) {
 		Nodes:        web.NodeCounts{Total: status.NodeTotal, Eligible: status.Eligible},
 		Subscription: metadata,
 	}
+	result.ProviderAuth = make(map[string]web.AuthSpec)
 	for _, id := range r.providers.IDs() {
 		result.Providers = append(result.Providers, string(id))
+		spec, err := r.providers.Auth(id)
+		if err != nil {
+			continue
+		}
+		view := web.AuthSpec{Fields: make([]web.AuthField, 0, len(spec.Fields))}
+		for _, field := range spec.Fields {
+			view.Fields = append(view.Fields, web.AuthField{Key: field.Key, Label: field.Label, Secret: field.Secret})
+		}
+		result.ProviderAuth[string(id)] = view
 	}
 	if len(status.Accounts) != 0 {
 		result.Accounts = make(map[string]web.Account, len(status.Accounts))

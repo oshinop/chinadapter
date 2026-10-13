@@ -60,7 +60,8 @@ type fakeDriver struct {
 	refresh func(context.Context, provider.Snapshot) (provider.Snapshot, error)
 }
 
-func (driver *fakeDriver) ID() provider.ID { return driver.id }
+func (driver *fakeDriver) ID() provider.ID  { return driver.id }
+func (*fakeDriver) Auth() provider.AuthSpec { return provider.AuthSpec{} }
 func (driver *fakeDriver) Login(context.Context, provider.Credentials) (provider.Snapshot, error) {
 	return testSnapshot(driver.id, driver.now()), nil
 }
@@ -134,7 +135,7 @@ func newFixtureWithClock(t *testing.T, now func() time.Time, ids ...provider.ID)
 	}
 	fixture.restore(t)
 	for _, id := range ids {
-		if _, err := fixture.coordinator.Login(t.Context(), id, provider.Credentials{}); err != nil {
+		if _, err := fixture.coordinator.Login(t.Context(), id, provider.Credentials{InstallationID: "installation"}); err != nil {
 			t.Fatal(err)
 		}
 	}

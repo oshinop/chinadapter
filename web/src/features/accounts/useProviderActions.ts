@@ -24,11 +24,10 @@ export function useProviderActions({
 }) {
     const loginAccount = async (
         provider: string,
-        account: string,
-        password: string,
+        fields: Record<string, string>,
     ): Promise<void> => {
         const revision = sessionRevision.current;
-        await api.login(provider, account, password);
+        await api.login(provider, fields);
         await loadAuthenticatedData();
         if (revision === sessionRevision.current) replaceRoute("/");
     };

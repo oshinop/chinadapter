@@ -19,6 +19,7 @@ import (
 	"github.com/oshinop/chinadapter/internal/config"
 	"github.com/oshinop/chinadapter/internal/lifecycle"
 	"github.com/oshinop/chinadapter/internal/provider"
+	"github.com/oshinop/chinadapter/internal/provider/baidu"
 	"github.com/oshinop/chinadapter/internal/provider/kuaifan"
 	"github.com/oshinop/chinadapter/internal/provider/quickfox"
 	"github.com/oshinop/chinadapter/internal/provider/transocks"
@@ -107,10 +108,10 @@ func NewDaemon(cfg config.Config, stateDirectory, version string) (result *Daemo
 	}
 	transocksSS, transocksTrojan := transocks.NewTransports(transocksClient)
 	providers, err := provider.NewRegistry(
-		[]provider.Driver{kuaifanDriver, quickfoxDriver, transocksDriver},
+		[]provider.Driver{kuaifanDriver, quickfoxDriver, transocksDriver, baidu.NewDriver(baidu.DriverConfig{})},
 		[]provider.Transport{
 			kuaifan.NewTransport(), kuaifan.NewSPEEDINTransport(), quickfox.NewTransport(),
-			transocksSS, transocksTrojan,
+			transocksSS, transocksTrojan, baidu.NewTransport(),
 		},
 	)
 	if err != nil {

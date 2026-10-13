@@ -16,7 +16,7 @@ export function describeError(error: unknown): string {
         if (error.problem.code === "invalid_next_access_token")
             return "Use a different access token of 16–128 bytes.";
         if (error.problem.code === "login_rejected")
-            return "The provider rejected that email or password.";
+            return "The provider rejected those credentials.";
         if (error.problem.code === "device_limit")
             return "The provider account is signed in on too many devices. Sign out of one in the provider's app, then try again.";
         return error.problem.detail || error.problem.title;

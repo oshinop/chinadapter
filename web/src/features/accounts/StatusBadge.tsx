@@ -9,8 +9,8 @@ interface StatusDetail {
 
 export const stateDetails: Record<ServiceState, StatusDetail> = {
     signed_out: {
-        label: "Signed out",
-        message: "Connect an account to load nodes.",
+        label: "No providers",
+        message: "Add a provider to load nodes.",
         tone: "neutral",
     },
     authenticating: {
@@ -27,7 +27,7 @@ export const stateDetails: Record<ServiceState, StatusDetail> = {
     },
     expired: {
         label: "Expired",
-        message: "Connect your account again.",
+        message: "Add the provider again.",
         tone: "danger",
     },
     error: {

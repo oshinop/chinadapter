@@ -218,7 +218,7 @@ func TestNewLineProtocolIsLearnedLazily(t *testing.T) {
 			}
 		}
 	})
-	current, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "password", InstallationID: "installation"})
+	current, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "password"}})
 	if err != nil {
 		t.Fatal(err)
 	}

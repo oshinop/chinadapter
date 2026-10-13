@@ -59,12 +59,13 @@ func NewDriver(config DriverConfig) (*Driver, error) {
 
 func (*Driver) ID() provider.ID { return ProviderID }
 
+func (*Driver) Auth() provider.AuthSpec { return provider.AccountPasswordAuth("Email") }
+
 func (driver *Driver) Login(ctx context.Context, credentials provider.Credentials) (provider.Snapshot, error) {
-	if driver == nil || !credentials.Valid() {
+	if driver == nil || provider.ValidateCredentials(driver.Auth(), credentials) != nil {
 		return provider.Snapshot{}, provider.ErrInvalidInput
 	}
-	session, err := driver.client.Login(ctx, credentials.Account, credentials.Password, credentials.InstallationID)
-	credentials.Password = ""
+	session, err := driver.client.Login(ctx, credentials.Field(provider.FieldAccount), credentials.Field(provider.FieldPassword), credentials.InstallationID)
 	if err != nil {
 		if errors.Is(err, ErrLoginRejected) {
 			return provider.Snapshot{}, provider.ErrLoginRejected

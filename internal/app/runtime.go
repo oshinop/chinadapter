@@ -24,6 +24,7 @@ const (
 // ProviderController is the provider-neutral account lifecycle contract.
 type ProviderController interface {
 	IDs() []provider.ID
+	Auth(provider.ID) (provider.AuthSpec, error)
 	Login(context.Context, provider.ID, provider.Credentials) (provider.Account, error)
 	Refresh(context.Context, provider.ID) error
 	Logout(context.Context, provider.ID) error

@@ -136,10 +136,11 @@ func (f *fakeBackend) Login(_ context.Context, input LoginInput) (Account, error
 	if release != nil {
 		<-release
 	}
-	if input.Account == "fail@example.com" {
+	account := input.Fields["account"]
+	if account == "fail@example.com" {
 		return Account{}, errors.New("rejected")
 	}
-	return Account{Provider: input.Provider, Display: input.Account}, nil
+	return Account{Provider: input.Provider, Display: account}, nil
 }
 func (f *fakeBackend) Logout(_ context.Context, provider string) error {
 	f.mu.Lock()
@@ -608,7 +609,7 @@ func TestAuthenticatedMutationsAccountLoginAndAccessLock(t *testing.T) {
 	if refreshed.Code != http.StatusAccepted {
 		t.Fatalf("refresh = %d: %s", refreshed.Code, refreshed.Body.String())
 	}
-	accountLogin := request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
+	accountLogin := request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","fields":{"account":"person@example.com","password":"password"}}`, cookie, testOrigin)
 	if accountLogin.Code != http.StatusOK || strings.Contains(accountLogin.Body.String(), "person@example.com") {
 		t.Fatalf("account login = %d: %s", accountLogin.Code, accountLogin.Body.String())
 	}
@@ -655,7 +656,7 @@ func TestAccessLockCompletesDuringProviderLogin(t *testing.T) {
 
 		loginResponses := make(chan *httptest.ResponseRecorder, 1)
 		go func() {
-			loginResponses <- request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","account":"person@example.com","password":"password"}`, cookie, testOrigin)
+			loginResponses <- request(api, http.MethodPost, "/api/v1/auth/login", `{"provider":"kuaifan","fields":{"account":"person@example.com","password":"password"}}`, cookie, testOrigin)
 		}()
 		synctest.Wait()
 		select {

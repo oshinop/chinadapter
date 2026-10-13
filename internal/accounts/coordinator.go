@@ -59,9 +59,24 @@ func (coordinator *Coordinator) IDs() []provider.ID {
 	return coordinator.providers.IDs()
 }
 
+// Auth returns the credential spec of one registered provider.
+func (coordinator *Coordinator) Auth(id provider.ID) (provider.AuthSpec, error) {
+	if coordinator == nil {
+		return provider.AuthSpec{}, provider.ErrUnknownProvider
+	}
+	driver, err := coordinator.providers.Driver(id)
+	if err != nil {
+		return provider.AuthSpec{}, err
+	}
+	return driver.Auth(), nil
+}
+
 func (coordinator *Coordinator) Login(ctx context.Context, id provider.ID, credentials provider.Credentials) (provider.Account, error) {
 	driver, err := coordinator.providers.Driver(id)
 	if err != nil {
+		return provider.Account{}, err
+	}
+	if err := provider.ValidateCredentials(driver.Auth(), credentials); err != nil {
 		return provider.Account{}, err
 	}
 	lock := coordinator.locks[id]
@@ -73,7 +88,7 @@ func (coordinator *Coordinator) Login(ctx context.Context, id provider.ID, crede
 		}
 	}
 	next, err := driver.Login(ctx, credentials)
-	credentials.Password = ""
+	clear(credentials.Fields)
 	if err != nil {
 		return provider.Account{}, err
 	}

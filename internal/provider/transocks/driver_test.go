@@ -77,7 +77,7 @@ func TestDriverLoginAndRefreshSnapshot(t *testing.T) {
 			http.NotFound(w, request)
 		}
 	})
-	snapshot, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "never-retain-login-password", InstallationID: "fixture-installation"})
+	snapshot, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "fixture-installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "never-retain-login-password"}})
 	if err != nil {
 		t.Fatal(err)
 	}
@@ -156,7 +156,7 @@ func TestDriverRefreshAuthAndTransientFailures(t *testing.T) {
 						writeFixtureConnect(w, fixtureSSConfig("ss.example.invalid", 12345, "password"))
 					}
 				})
-				current, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "password", InstallationID: "installation"})
+				current, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "password"}})
 				if err != nil {
 					t.Fatal(err)
 				}
@@ -179,7 +179,7 @@ func TestDriverRefreshAuthAndTransientFailures(t *testing.T) {
 
 func TestDriverLoginRejectedAndInvalidState(t *testing.T) {
 	driver := fixtureDriver(t, func(w http.ResponseWriter, request *http.Request) { fmt.Fprint(w, `{"code":40001}`) })
-	if _, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "wrong", InstallationID: "installation"}); !errors.Is(err, provider.ErrLoginRejected) {
+	if _, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "wrong"}}); !errors.Is(err, provider.ErrLoginRejected) {
 		t.Fatal("bad credentials not classified", err)
 	}
 	if _, err := driver.Refresh(context.Background(), provider.Snapshot{}); !errors.Is(err, provider.ErrNoSession) {
@@ -208,7 +208,7 @@ func TestDriverKeepsDistinctCatalogLinesWithSharedTunnelEndpoints(t *testing.T) 
 			writeFixtureConnect(w, fixtureSSConfig("ss.example.invalid", 12345, request.URL.Path))
 		}
 	})
-	snapshot, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "password", InstallationID: "installation"})
+	snapshot, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "password"}})
 	if err != nil || !snapshot.Valid() || len(snapshot.Nodes) != 2 || snapshot.Nodes[0].ID == snapshot.Nodes[1].ID {
 		t.Fatal("distinct catalog lines were merged by rotating tunnel endpoint", err)
 	}
@@ -227,7 +227,7 @@ func TestDriverNoUsableProtocolsDoesNotInventAuthority(t *testing.T) {
 			writeFixtureConnect(w, tunnelConfig{Proto: new(1)})
 		}
 	})
-	if _, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "password", InstallationID: "installation"}); !errors.Is(err, ErrNoUsableNodes) {
+	if _, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "password"}}); !errors.Is(err, ErrNoUsableNodes) {
 		t.Fatal("unsupported protocols became usable", err)
 	}
 }
@@ -252,7 +252,7 @@ func TestDriverRefreshRejectsChangedAccountBeforeConnect(t *testing.T) {
 			writeFixtureConnect(w, fixtureSSConfig("ss.example.invalid", 12345, "password"))
 		}
 	})
-	current, err := driver.Login(context.Background(), provider.Credentials{Account: "fixture@example.invalid", Password: "password", InstallationID: "installation"})
+	current, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "installation", Fields: map[string]string{provider.FieldAccount: "fixture@example.invalid", provider.FieldPassword: "password"}})
 	if err != nil {
 		t.Fatal(err)
 	}

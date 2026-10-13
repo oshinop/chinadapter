@@ -134,7 +134,7 @@ func TestDualProfileLoginRejectsDifferentUserIDs(t *testing.T) {
 		}
 		return encryptedHTTPResponse(t, envelope(map[string]any{"userId": userID, "token": "session", "isVip": false, "vipEndTime": 0})), nil
 	}))
-	_, err := lifecycleDriver(t, ios, windows).Login(t.Context(), provider.Credentials{Account: "person@example.test", Password: "password", InstallationID: "00112233445566778899aabbccddeeff"})
+	_, err := lifecycleDriver(t, ios, windows).Login(t.Context(), provider.Credentials{InstallationID: "00112233445566778899aabbccddeeff", Fields: map[string]string{provider.FieldAccount: "person@example.test", provider.FieldPassword: "password"}})
 	if !errors.Is(err, ErrSchema) {
 		t.Fatalf("different profile account IDs error = %v", err)
 	}

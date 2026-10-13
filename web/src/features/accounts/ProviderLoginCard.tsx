@@ -1,3 +1,4 @@
+import type { StatusResponse } from "@/types";
 import { AuthCardShell } from "@/components/AuthCardShell";
 import { CardContent, CardDescription, CardHeader } from "@/components/ui/card";
 import { ProviderCredentialsForm } from "./ProviderCredentialsForm";
@@ -6,23 +7,24 @@ export function ProviderLoginCard({
     onSubmit,
     error,
     providers,
+    providerAuth,
 }: {
     onSubmit: (
         provider: string,
-        account: string,
-        password: string,
+        fields: Record<string, string>,
     ) => Promise<void>;
     error: string;
     providers: string[];
+    providerAuth: StatusResponse["providerAuth"];
 }) {
     return (
         <AuthCardShell>
             <CardHeader>
                 <h1 className="font-sans text-xl font-semibold uppercase tracking-[0.05em]">
-                    Connect account
+                    Add a provider
                 </h1>
                 <CardDescription>
-                    Choose a provider before entering account credentials.
+                    Choose a provider to add.
                 </CardDescription>
             </CardHeader>
             <CardContent>
@@ -31,6 +33,7 @@ export function ProviderLoginCard({
                     idPrefix="initial"
                     onSubmit={onSubmit}
                     providers={providers}
+                    providerAuth={providerAuth}
                 />
             </CardContent>
         </AuthCardShell>

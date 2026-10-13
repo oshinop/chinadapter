@@ -75,7 +75,7 @@ func TestDriverLoginAndRefreshEncryptedControlProtocol(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	snapshot, err := driver.Login(context.Background(), provider.Credentials{Account: " alice@example.com ", Password: "password", InstallationID: "00112233445566778899aabbccddeeff"})
+	snapshot, err := driver.Login(context.Background(), provider.Credentials{InstallationID: "00112233445566778899aabbccddeeff", Fields: map[string]string{provider.FieldAccount: " alice@example.com ", provider.FieldPassword: "password"}})
 	if err != nil {
 		t.Fatal(err)
 	}

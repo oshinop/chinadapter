@@ -138,10 +138,10 @@ export class ApiClient {
 
 
 
-  async login(provider: string, account: string, password: string): Promise<LoginResponse> {
+  async login(provider: string, fields: Record<string, string>): Promise<LoginResponse> {
     return this.request<LoginResponse>("/auth/login", {
       method: "POST",
-      body: { provider, account, password },
+      body: { provider, fields },
     });
   }
 

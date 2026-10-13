@@ -39,6 +39,9 @@ type stableDriver struct {
 }
 
 func (driver *stableDriver) ID() provider.ID { return driver.id }
+func (*stableDriver) Auth() provider.AuthSpec {
+	return provider.AuthSpec{Fields: []provider.AuthField{{Key: provider.FieldAccount, Label: "Account"}}}
+}
 func (driver *stableDriver) Login(_ context.Context, credentials provider.Credentials) (provider.Snapshot, error) {
 	protocol := provider.Protocol(string(driver.id) + "-native")
 	route := provider.Route{Provider: driver.id, Protocol: protocol, Host: string(driver.id) + ".example.test", Port: 11000}
@@ -46,7 +49,7 @@ func (driver *stableDriver) Login(_ context.Context, credentials provider.Creden
 	if err != nil {
 		return provider.Snapshot{}, err
 	}
-	return provider.Snapshot{Provider: driver.id, Account: provider.Account{UserID: credentials.Account, Display: "•••", Tier: "free"}, ExpiresAt: driver.now.Add(24 * time.Hour), RefreshState: []byte("renewable-refresh-state"), Authorities: map[string]provider.Authority{"default": {Protocol: protocol, Data: []byte(credentials.Account)}}, Nodes: []provider.Node{{ID: id, Protocol: protocol, AuthorityID: "default", Host: route.Host, Port: route.Port, Name: string(driver.id) + " line", Group: "original region", Model: "original model", Eligible: true}}}, nil
+	return provider.Snapshot{Provider: driver.id, Account: provider.Account{UserID: credentials.Field(provider.FieldAccount), Display: "•••", Tier: "free"}, ExpiresAt: driver.now.Add(24 * time.Hour), RefreshState: []byte("renewable-refresh-state"), Authorities: map[string]provider.Authority{"default": {Protocol: protocol, Data: []byte(credentials.Field(provider.FieldAccount))}}, Nodes: []provider.Node{{ID: id, Protocol: protocol, AuthorityID: "default", Host: route.Host, Port: route.Port, Name: string(driver.id) + " line", Group: "original region", Model: "original model", Eligible: true}}}, nil
 }
 func (driver *stableDriver) Refresh(_ context.Context, previous provider.Snapshot) (provider.Snapshot, error) {
 	next := previous.Clone()
@@ -219,7 +222,7 @@ func stableCapture(t *testing.T, harness *stableHarness) (string, map[string]cre
 }
 func stableLogin(t *testing.T, harness *stableHarness, id, account string) {
 	t.Helper()
-	if _, err := harness.runtime.Login(t.Context(), web.LoginInput{Provider: id, Account: account}); err != nil {
+	if _, err := harness.runtime.Login(t.Context(), web.LoginInput{Provider: id, Fields: map[string]string{provider.FieldAccount: account}}); err != nil {
 		t.Fatal(err)
 	}
 }

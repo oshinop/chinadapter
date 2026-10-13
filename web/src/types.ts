@@ -17,6 +17,10 @@ export interface AccountSummary {
   subscriptionEndsAt?: string;
 }
 
+export interface ProviderAuthSpec {
+  fields: { key: string; label: string; secret: boolean }[];
+}
+
 export interface StatusResponse {
   state: ServiceState;
   version: string;
@@ -25,6 +29,8 @@ export interface StatusResponse {
     startedAt?: string;
   };
   providers: string[];
+  /** Credential fields declared by each provider; an empty list denotes a public service. */
+  providerAuth: Record<string, ProviderAuthSpec>;
   accounts?: Record<string, AccountSummary>;
   controlPlane: {
     lastRefreshAt?: string;

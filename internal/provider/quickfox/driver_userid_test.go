@@ -29,7 +29,7 @@ func TestDriverLoginRejectsUserIDAboveUint32Maximum(t *testing.T) {
 			t.Parallel()
 			driver := userIDTestDriver(t, test.userID)
 			snapshot, err := driver.Login(context.Background(), provider.Credentials{
-				Account: "alice@example.com", Password: "password", InstallationID: "00112233445566778899aabbccddeeff",
+				InstallationID: "00112233445566778899aabbccddeeff", Fields: map[string]string{provider.FieldAccount: "alice@example.com", provider.FieldPassword: "password"},
 			})
 			if test.rejected {
 				if !errors.Is(err, ErrSchema) || !strings.Contains(err.Error(), "user ID exceeds uint32 maximum") || !reflect.DeepEqual(snapshot, provider.Snapshot{}) {

@@ -117,6 +117,7 @@ type Status struct {
 	Version      string               `json:"version,omitempty"`
 	Deployment   Deployment           `json:"deployment"`
 	Providers    []string             `json:"providers"`
+	ProviderAuth map[string]AuthSpec  `json:"providerAuth"`
 	Accounts     map[string]Account   `json:"accounts,omitempty"`
 	ControlPlane ControlPlaneStatus   `json:"controlPlane"`
 	DataPlane    DataPlaneStatus      `json:"dataPlane"`
@@ -140,11 +141,24 @@ type Account struct {
 	NextRefreshAt      time.Time  `json:"nextRefreshAt,omitzero"`
 }
 
-// LoginInput carries provider credentials transiently to the runtime.
+// AuthSpec lists the credential fields a provider needs to be added. An empty
+// Fields list marks a public service added without credentials.
+type AuthSpec struct {
+	Fields []AuthField `json:"fields"`
+}
+
+// AuthField is one credential input the console renders for a provider.
+type AuthField struct {
+	Key    string `json:"key"`
+	Label  string `json:"label"`
+	Secret bool   `json:"secret"`
+}
+
+// LoginInput carries provider credential field values transiently to the
+// runtime. Its keys are the provider's AuthSpec field keys.
 type LoginInput struct {
 	Provider string
-	Account  string
-	Password string
+	Fields   map[string]string
 }
 
 type ControlPlaneStatus struct {

@@ -24,7 +24,8 @@ type runtimeDriver struct {
 	refresh func(context.Context, provider.Snapshot) (provider.Snapshot, error)
 }
 
-func (driver *runtimeDriver) ID() provider.ID { return driver.id }
+func (driver *runtimeDriver) ID() provider.ID  { return driver.id }
+func (*runtimeDriver) Auth() provider.AuthSpec { return provider.AuthSpec{} }
 func (driver *runtimeDriver) Login(context.Context, provider.Credentials) (provider.Snapshot, error) {
 	protocol := provider.Protocol(string(driver.id) + "-native")
 	return provider.Snapshot{

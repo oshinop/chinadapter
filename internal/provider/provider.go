@@ -64,17 +64,75 @@ func validIdentifier(value string) bool {
 	return true
 }
 
-// Credentials are transient provider login input. Drivers must not retain the
-// password after Login returns.
-type Credentials struct {
-	Account        string
-	Password       string
-	InstallationID string
+// Field keys shared by providers that sign in with an account and password.
+// They are a convention, not a requirement: a driver declares any fields it
+// needs, or none for a public service.
+const (
+	FieldAccount  = "account"
+	FieldPassword = "password"
+)
+
+const maxCredentialFields = 16
+
+// AuthField describes one credential input a driver needs to add its account.
+// Key is the wire name; Label is the console label; Secret fields are masked
+// and never retained by the runtime.
+type AuthField struct {
+	Key    string
+	Label  string
+	Secret bool
 }
 
-func (credentials Credentials) Valid() bool {
-	return validField(strings.TrimSpace(credentials.Account)) &&
-		validField(credentials.Password) && validField(strings.TrimSpace(credentials.InstallationID))
+// AuthSpec is a driver's credential contract. An empty Fields list means the
+// provider is a public service added without any credentials.
+type AuthSpec struct {
+	Fields []AuthField
+}
+
+// AccountPasswordAuth is the spec for providers that sign in with an account
+// identifier and a password.
+func AccountPasswordAuth(accountLabel string) AuthSpec {
+	return AuthSpec{Fields: []AuthField{
+		{Key: FieldAccount, Label: accountLabel},
+		{Key: FieldPassword, Label: "Password", Secret: true},
+	}}
+}
+
+// Credentials are transient provider login input: the values of the fields the
+// driver's AuthSpec declares, plus the runtime's stable installation ID. Drivers
+// must not retain secret field values after Login returns.
+type Credentials struct {
+	InstallationID string
+	Fields         map[string]string
+}
+
+// Field returns the value of one declared credential field, or "".
+func (credentials Credentials) Field(key string) string { return credentials.Fields[key] }
+
+// ValidateCredentials checks credentials against a driver's spec: a valid
+// installation ID, every declared field present and non-blank, and no
+// undeclared field. Format checks beyond that belong to the driver.
+func ValidateCredentials(spec AuthSpec, credentials Credentials) error {
+	if !validField(strings.TrimSpace(credentials.InstallationID)) || len(credentials.Fields) > maxCredentialFields {
+		return ErrInvalidInput
+	}
+	declared := make(map[string]struct{}, len(spec.Fields))
+	for _, field := range spec.Fields {
+		declared[field.Key] = struct{}{}
+		value := credentials.Fields[field.Key]
+		if !field.Secret {
+			value = strings.TrimSpace(value)
+		}
+		if !validField(value) {
+			return ErrInvalidInput
+		}
+	}
+	for key := range credentials.Fields {
+		if _, ok := declared[key]; !ok {
+			return ErrInvalidInput
+		}
+	}
+	return nil
 }
 
 // RedactAccount returns a provider-neutral, browser-safe display value.
@@ -199,8 +257,11 @@ func (snapshot Snapshot) Clone() Snapshot {
 }
 
 // Driver owns one provider's account login, refresh state, and node catalog.
+// Auth declares the credentials Login needs; the runtime collects exactly those
+// fields and validates them with ValidateCredentials before calling Login.
 type Driver interface {
 	ID() ID
+	Auth() AuthSpec
 	Login(context.Context, Credentials) (Snapshot, error)
 	Refresh(context.Context, Snapshot) (Snapshot, error)
 }

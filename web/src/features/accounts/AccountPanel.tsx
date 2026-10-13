@@ -24,7 +24,7 @@ export function AccountPanel({
 }: {
     accountView: ReturnType<typeof useAccountViews>;
     eligibleNodes: NodeRecord[];
-    onLoginAccount: (provider: string, account: string, password: string) => Promise<void>;
+    onLoginAccount: (provider: string, fields: Record<string, string>) => Promise<void>;
     onRefreshAll: () => Promise<void>;
     onRefreshProvider: (provider: string) => Promise<void>;
     onRemoveProvider: (provider: string) => Promise<void>;
@@ -43,6 +43,11 @@ export function AccountPanel({
         setConfirmRemoval,
     } = accountView;
     const accounts = status.accounts ?? {};
+    // A public provider (no credential fields) has no account identity to show.
+    const accountLabel = (provider: string, display?: string) =>
+        status.providerAuth?.[provider]?.fields.length === 0
+            ? "Public service"
+            : display;
     const activeAccount =
         activeProvider === "all" ? undefined : accounts[activeProvider];
     const lastRefreshAt = formatTime(status.controlPlane.lastRefreshAt);
@@ -57,7 +62,7 @@ export function AccountPanel({
                 <CardTitle>Providers</CardTitle>
                 <CardDescription>
                     {Object.keys(accounts).length} of{" "}
-                    {status.providers.length} providers connected.
+                    {status.providers.length} providers added.
                 </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-4 sm:grid-cols-2 lg:grid-cols-3">
@@ -84,13 +89,15 @@ export function AccountPanel({
                             </span>
                             <span className="text-xs text-muted-foreground">
                                 {account
-                                    ? account.display
-                                    : "No account connected"}
+                                    ? accountLabel(provider, account.display)
+                                    : status.providerAuth?.[provider]?.fields.length === 0
+                                      ? "Public service"
+                                      : "Needs an account"}
                             </span>
                             <span className="font-sans text-sm font-semibold uppercase tracking-[0.08em] text-primary/90">
                                 {account
                                     ? account.tier
-                                    : "Not connected"}
+                                    : "Not added"}
                             </span>
                             <span className="text-[0.625rem] uppercase tracking-[0.18em] text-muted-foreground">
                                 {providerNodes.length} eligible
@@ -102,7 +109,7 @@ export function AccountPanel({
             </CardContent>
             <CardFooter className="flex-wrap justify-between gap-3 border-t border-dashed border-border/70 pt-4 [&.border-t]:pt-4">
                 <p className="min-w-0 text-xs leading-5 text-muted-foreground">
-                    Manage your linked accounts.
+                    Manage your providers.
                 </p>
                 <div className="flex w-full flex-wrap gap-2 sm:ml-auto sm:w-auto sm:justify-end">
                     <Button
@@ -132,7 +139,7 @@ export function AccountPanel({
                         variant="outline"
                     >
                         <LogOut />
-                        Sign out all
+                        Remove all
                     </Button>
                 </div>
             </CardFooter>
@@ -141,10 +148,10 @@ export function AccountPanel({
         <Card className="panel">
             <CardHeader>
                 <CardTitle>
-                    {providerLabel(activeProvider)} account
+                    {providerLabel(activeProvider)}
                 </CardTitle>
                 <CardDescription>
-                    {activeAccount.display}
+                    {accountLabel(activeProvider, activeAccount.display)}
                 </CardDescription>
             </CardHeader>
             <CardContent className="grid gap-5 sm:grid-cols-2 xl:grid-cols-4">
@@ -227,7 +234,7 @@ export function AccountPanel({
                             size="sm"
                             variant="outline"
                         >
-                            Remove account
+                            Remove provider
                         </Button>
                     )}
                 </div>
@@ -237,14 +244,16 @@ export function AccountPanel({
         <Card className="panel max-w-xl">
             <CardHeader>
                 <CardTitle>
-                    Connect {providerLabel(activeProvider)}
+                    Add {providerLabel(activeProvider)}
                 </CardTitle>
             </CardHeader>
             <CardContent>
                 <ProviderCredentialsForm
                     fixedProvider={activeProvider}
                     idPrefix={`add-${activeProvider}`}
+                    key={activeProvider}
                     onSubmit={onLoginAccount}
+                    providerAuth={status.providerAuth}
                 />
             </CardContent>
         </Card>

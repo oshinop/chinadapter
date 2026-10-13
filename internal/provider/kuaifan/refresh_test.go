@@ -76,7 +76,7 @@ func TestDriverLoginAggregatesProfilesAndRoutesOpaqueAuthorities(t *testing.T) {
 		t.Fatal(err)
 	}
 	snapshot, err := driver.Login(context.Background(), provider.Credentials{
-		Account: "alice@example.test", Password: "password", InstallationID: "00112233445566778899aabbccddeeff",
+		InstallationID: "00112233445566778899aabbccddeeff", Fields: map[string]string{provider.FieldAccount: "alice@example.test", provider.FieldPassword: "password"},
 	})
 	if err != nil {
 		t.Fatal(err)
@@ -185,7 +185,7 @@ func TestDriverRejectedLoginIsNotRetried(t *testing.T) {
 	if err != nil {
 		t.Fatal(err)
 	}
-	_, err = driver.Login(context.Background(), provider.Credentials{Account: "a@example.test", Password: "secret", InstallationID: "00112233445566778899aabbccddeeff"})
+	_, err = driver.Login(context.Background(), provider.Credentials{InstallationID: "00112233445566778899aabbccddeeff", Fields: map[string]string{provider.FieldAccount: "a@example.test", provider.FieldPassword: "secret"}})
 	if !errors.Is(err, provider.ErrLoginRejected) {
 		t.Fatalf("Login error = %v, want provider.ErrLoginRejected", err)
 	}

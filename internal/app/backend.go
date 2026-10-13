@@ -158,10 +158,7 @@ func (r *Runtime) Login(ctx context.Context, input web.LoginInput) (web.Account,
 	if err != nil {
 		return web.Account{}, classifyLoginError(err)
 	}
-	account, err := r.providers.Login(ctx, id, provider.Credentials{
-		Account: input.Account, Password: input.Password, InstallationID: persistent.InstallationID,
-	})
-	input.Password = ""
+	account, err := r.providers.Login(ctx, id, provider.Credentials{InstallationID: persistent.InstallationID, Fields: input.Fields})
 	if err != nil {
 		r.publish("state", lifecycleEvent{State: string(r.manager.State())})
 		return web.Account{}, classifyLoginError(err)

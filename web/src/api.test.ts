@@ -8,6 +8,27 @@ afterEach(() => {
 });
 
 describe("API response contracts", () => {
+  it.each<[string, Record<string, string>]>([
+    ["kuaifan", { account: "operator@example.com", password: "volatile-password" }],
+    ["baidu", {}],
+  ])("posts the declared credential map for %s", async (provider, fields) => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({}), { status: 200, headers: jsonHeaders }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new ApiClient().login(provider, fields)).resolves.toEqual({});
+
+    expect(fetchMock.mock.calls[0][0]).toBe("/api/v1/auth/login");
+    expect(fetchMock.mock.calls[0][1]).toMatchObject({ method: "POST", credentials: "same-origin", cache: "no-store" });
+    expect(JSON.parse(fetchMock.mock.calls[0][1].body)).toEqual({ provider, fields });
+  });
+
+  it("propagates invalid_login when the provider rejects the credential shape", async () => {
+    const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({ title: "Invalid provider fields", status: 400, code: "invalid_login" }), { status: 400, headers: jsonHeaders }));
+    vi.stubGlobal("fetch", fetchMock);
+
+    await expect(new ApiClient().login("kuaifan", {})).rejects.toMatchObject({ problem: { status: 400, code: "invalid_login" } });
+  });
+
   it("strips endpoint and exclusion fields from node list responses", async () => {
     const fetchMock = vi.fn().mockResolvedValue(new Response(JSON.stringify({
       nodes: [{

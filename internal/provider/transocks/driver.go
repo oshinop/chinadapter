@@ -44,12 +44,14 @@ func NewDriver(config DriverConfig) (*Driver, error) {
 
 func (*Driver) ID() provider.ID { return ProviderID }
 
+func (*Driver) Auth() provider.AuthSpec { return provider.AccountPasswordAuth("Email or phone") }
+
 func (driver *Driver) Login(ctx context.Context, credentials provider.Credentials) (provider.Snapshot, error) {
-	if driver == nil || !credentials.Valid() {
+	if driver == nil || provider.ValidateCredentials(driver.Auth(), credentials) != nil {
 		return provider.Snapshot{}, provider.ErrInvalidInput
 	}
-	stored, login, err := driver.client.Login(ctx, credentials.Account, credentials.Password, credentials.InstallationID)
-	credentials.Password = ""
+	account := credentials.Field(provider.FieldAccount)
+	stored, login, err := driver.client.Login(ctx, account, credentials.Field(provider.FieldPassword), credentials.InstallationID)
 	if err != nil {
 		if errors.Is(err, ErrLoginRejected) {
 			return provider.Snapshot{}, fmt.Errorf("%w: %w", provider.ErrLoginRejected, err)
@@ -63,7 +65,7 @@ func (driver *Driver) Login(ctx context.Context, credentials provider.Credential
 	if profile.UserID != login.UserID {
 		return provider.Snapshot{}, ErrSchema
 	}
-	snapshot, err := driver.snapshot(ctx, stored, provider.RedactAccount(credentials.Account), profile, true)
+	snapshot, err := driver.snapshot(ctx, stored, provider.RedactAccount(account), profile, true)
 	if err != nil {
 		return provider.Snapshot{}, err
 	}

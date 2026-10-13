@@ -5,6 +5,7 @@ const protocolLabels: Record<string, string> = {
     "quickfox-native": "QF Native",
     "transocks-ss": "Shadowsocks",
     "transocks-trojan": "Trojan",
+    "baidu-http": "HTTP CONNECT",
 };
 
 export function protocolLabel(protocol: string): string {

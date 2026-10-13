@@ -1,24 +1,32 @@
 package web
 
-import "testing"
+import (
+	"strings"
+	"testing"
+)
 
-func TestValidAccountAcceptsEmailOrPhoneOnly(t *testing.T) {
+func TestValidCredentialFieldsBoundsShapeOnly(t *testing.T) {
 	t.Parallel()
-	for account, want := range map[string]bool{
-		"person@example.com":          true,
-		"13800138000":                 true,
-		"+8613800138000":              true,
-		"12345":                       false,
-		"123456789012345678901":       false,
-		"138-0013-8000":               false,
-		"++8613800138000":             false,
-		"Person <person@example.com>": false,
-		"person@":                     false,
-		"person\r\n@example.com":      false,
-		"":                            false,
+	tooMany := make(map[string]string, maxCredentialFields+1)
+	for index := range maxCredentialFields + 1 {
+		tooMany["k"+strings.Repeat("x", index)] = "v"
+	}
+	for name, test := range map[string]struct {
+		fields map[string]string
+		want   bool
+	}{
+		"public provider sends nothing": {nil, true},
+		"account and password":          {map[string]string{"account": "13800138000", "password": "secret"}, true},
+		"arbitrary declared key":        {map[string]string{"region": "cn"}, true},
+		"empty value left to the spec":  {map[string]string{"account": ""}, true},
+		"too many fields":               {tooMany, false},
+		"non-identifier key":            {map[string]string{"Account": "x"}, false},
+		"oversized value":               {map[string]string{"account": strings.Repeat("x", 4097)}, false},
+		"NUL in value":                  {map[string]string{"account": "a\x00b"}, false},
+		"invalid UTF-8":                 {map[string]string{"account": "\xff"}, false},
 	} {
-		if got := validAccount(account); got != want {
-			t.Errorf("validAccount(%q) = %v, want %v", account, got, want)
+		if got := validCredentialFields(test.fields); got != test.want {
+			t.Errorf("%s: validCredentialFields = %v, want %v", name, got, test.want)
 		}
 	}
 }

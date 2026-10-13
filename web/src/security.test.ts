@@ -40,7 +40,7 @@ describe("browser boundary", () => {
     await api.setupAccess("console-token-12345");
     await api.loginAccess("console-token-12345");
     await api.status();
-		await api.login("kuaifan", "operator@example.com", "volatile-password");
+    await api.login("kuaifan", { account: "operator@example.com", password: "volatile-password" });
 
     for (const [request, options] of fetchMock.mock.calls) {
       expect(request).toMatch(/^\/api\/v1\//);

@@ -199,6 +199,18 @@ describe("node inventory", () => {
     const group = await openGroup("West China");
     expect(within(group).getByTitle("Upstream protocol: kuaifan-speedin").textContent).toBe("SPEEDIN");
   });
+
+  it("labels Baidu HTTP nodes as HTTP CONNECT", async () => {
+    const status = readyStatus();
+    status.accounts = { baidu: { provider: "baidu", display: "Public service", tier: "Free", subscriptionActive: false } };
+    const inventory = [{ ...nodes[0], provider: "baidu", protocol: "baidu-http" }];
+    render(<App api={makeApi(status, inventory)} />);
+    await screen.findByRole("heading", { name: "Service status" });
+    await userEvent.click(screen.getByRole("button", { name: "Baidu Proxy" }));
+    const group = await openGroup("East China");
+
+    expect(within(group).getByTitle("Upstream protocol: baidu-http").textContent).toBe("HTTP CONNECT");
+  });
 });
 
 describe("subscription URL", () => {

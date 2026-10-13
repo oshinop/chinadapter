@@ -81,6 +81,7 @@ export function App({ api: providedApi }: AppProps) {
         content = (
             <ProviderLoginCard
                 providers={status?.providers ?? []}
+                providerAuth={status?.providerAuth ?? {}}
                 onSubmit={loginAccount}
                 error={loadError}
             />
@@ -135,8 +136,7 @@ function StatusConsole({
     onLockConsole: () => Promise<void>;
     onLoginAccount: (
         provider: string,
-        account: string,
-        password: string,
+        fields: Record<string, string>,
     ) => Promise<void>;
     onNodesChange: Dispatch<SetStateAction<NodeRecord[]>>;
     onRefreshAll: () => Promise<void>;
