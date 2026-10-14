@@ -251,24 +251,19 @@ export function NodeList({
                                             key={node.id}
                                             role="treeitem"
                                         >
-                                            <div className="min-w-0">
-                                                <div className="flex min-w-0 items-center gap-2">
-                                                    <p className="truncate text-sm font-medium">
-                                                        {node.name}
-                                                    </p>
-                                                    <Badge
-                                                        className="shrink-0 px-1.5 py-0 text-[0.65rem] font-medium tracking-wide"
-                                                        title={`Upstream protocol: ${node.protocol}`}
-                                                        variant="outline"
-                                                    >
-                                                        {protocolLabel(
-                                                            node.protocol,
-                                                        )}
-                                                    </Badge>
-                                                </div>
-                                                <p className="mt-0.5 text-[0.65rem] uppercase tracking-[0.18em] text-muted-foreground">
-                                                    {node.provider}
+                                            <div className="flex min-w-0 items-center gap-2">
+                                                <p className="truncate text-sm font-medium">
+                                                    {node.name}
                                                 </p>
+                                                <Badge
+                                                    className="shrink-0 px-1.5 py-0 text-[0.65rem] font-medium tracking-wide"
+                                                    title={`Upstream protocol: ${node.protocol}`}
+                                                    variant="outline"
+                                                >
+                                                    {protocolLabel(
+                                                        node.protocol,
+                                                    )}
+                                                </Badge>
                                             </div>
                                             <LatencyReadout node={node} />
                                             <div className="flex justify-end gap-1">

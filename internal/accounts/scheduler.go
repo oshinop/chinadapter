@@ -5,6 +5,7 @@ package accounts
 import (
 	"context"
 	"errors"
+	"net"
 	"sync"
 	"time"
 
@@ -30,6 +31,30 @@ type Status struct {
 	LastSuccess time.Time `json:"lastSuccess,omitzero"`
 	Attempts    int       `json:"attempts"`
 	NextRun     time.Time `json:"nextRun,omitzero"`
+	// Problem classifies the latest failed refresh; empty after success.
+	Problem string `json:"problem,omitempty"`
+}
+
+// ErrorClass names a refresh failure category without rendering the
+// underlying provider error, which may echo control-plane text.
+func ErrorClass(err error) string {
+	var netErr net.Error
+	switch {
+	case errors.Is(err, provider.ErrSessionRejected):
+		return "session_rejected"
+	case errors.Is(err, provider.ErrLoginRejected):
+		return "login_rejected"
+	case errors.Is(err, provider.ErrDeviceLimit):
+		return "device_limit"
+	case errors.Is(err, provider.ErrAuthorityExpired):
+		return "authority_expired"
+	case errors.Is(err, provider.ErrNoSession):
+		return "no_session"
+	case errors.As(err, &netErr):
+		return "network"
+	default:
+		return "unclassified"
+	}
 }
 
 // Lifecycle is the small account supervision contract used by the app facade.
@@ -324,9 +349,11 @@ func (supervisor *Supervisor) refresh(ctx context.Context, id provider.ID, accou
 			account.status.Status = StatusNeedsRelogin
 			account.status.Attempts++
 			account.status.NextRun = time.Time{}
+			account.status.Problem = ErrorClass(err)
 		default:
 			account.status.Status = StatusRefreshFailing
 			account.status.Attempts++
+			account.status.Problem = ErrorClass(err)
 			// MaxInterval bounds the base interval; cap the randomized delay too.
 			account.status.NextRun = now.Add(min(account.backoff.NextBackOff(), maxBackoff))
 		}

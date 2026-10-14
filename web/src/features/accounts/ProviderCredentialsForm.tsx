@@ -126,7 +126,7 @@ export function ProviderCredentialsForm({
             })}
             {authSpec && fields.length === 0 ? (
                 <p className="text-sm text-muted-foreground">
-                    This provider is a public service; no credentials needed.
+                    Public service. No sign-in needed.
                 </p>
             ) : null}
             <Button className="mt-2 w-full" disabled={submitting} type="submit">

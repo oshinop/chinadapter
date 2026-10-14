@@ -160,7 +160,7 @@ func NewDaemon(cfg config.Config, stateDirectory, version string) (result *Daemo
 		AccountRefresh: func(_ provider.ID, err error) {
 			if err != nil {
 				// Provider text may contain secrets; emit only its classification.
-				slog.Warn("provider refresh failed", "class", refreshErrorClass(err))
+				slog.Warn("provider refresh failed", "class", accounts.ErrorClass(err))
 			}
 		},
 	})
@@ -310,19 +310,4 @@ func (d *Daemon) watchdog(ctx context.Context) error {
 	}
 	_, err := d.store.Load(ctx)
 	return err
-}
-
-// refreshErrorClass names a refresh failure category without rendering the
-// underlying provider error, which may echo control-plane text.
-func refreshErrorClass(err error) string {
-	switch {
-	case errors.Is(err, provider.ErrSessionRejected):
-		return "session_rejected"
-	case errors.Is(err, provider.ErrLoginRejected):
-		return "login_rejected"
-	case errors.Is(err, provider.ErrNoSession):
-		return "no_session"
-	default:
-		return "unclassified"
-	}
 }

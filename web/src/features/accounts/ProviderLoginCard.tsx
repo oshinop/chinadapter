@@ -1,6 +1,6 @@
 import type { StatusResponse } from "@/types";
 import { AuthCardShell } from "@/components/AuthCardShell";
-import { CardContent, CardDescription, CardHeader } from "@/components/ui/card";
+import { CardContent, CardHeader } from "@/components/ui/card";
 import { ProviderCredentialsForm } from "./ProviderCredentialsForm";
 
 export function ProviderLoginCard({
@@ -23,9 +23,6 @@ export function ProviderLoginCard({
                 <h1 className="font-sans text-xl font-semibold uppercase tracking-[0.05em]">
                     Add a provider
                 </h1>
-                <CardDescription>
-                    Choose a provider to add.
-                </CardDescription>
             </CardHeader>
             <CardContent>
                 <ProviderCredentialsForm

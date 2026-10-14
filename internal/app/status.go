@@ -74,7 +74,7 @@ func (r *Runtime) Status(context.Context) (web.Status, error) {
 		for id, account := range status.Accounts {
 			view := browserAccount(string(id), account.Display, account.Tier, account.SubscriptionActive, account.SubscriptionEndsAt)
 			schedule := schedules[id]
-			view.RefreshStatus, view.LastRefreshAt, view.NextRefreshAt = schedule.Status, schedule.LastSuccess, schedule.NextRun
+			view.RefreshStatus, view.RefreshProblem, view.LastRefreshAt, view.NextRefreshAt = schedule.Status, schedule.Problem, schedule.LastSuccess, schedule.NextRun
 			result.Accounts[string(id)] = view
 		}
 	}

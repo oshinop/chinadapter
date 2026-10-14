@@ -139,7 +139,6 @@ describe("access token and browser session", () => {
     await userEvent.selectOptions(screen.getByLabelText("Provider"), "baidu");
 
     expect(document.querySelectorAll("input")).toHaveLength(0);
-    expect(screen.getByText("This provider is a public service; no credentials needed.")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Add provider" }));
 
     await waitFor(() => expect(api.login).toHaveBeenCalledWith("baidu", {}));
@@ -332,7 +331,6 @@ describe("access token and browser session", () => {
 
     expect(screen.getByText("Add Baidu Proxy", { selector: "[data-slot='card-title']" })).toBeTruthy();
     expect(document.querySelectorAll("input")).toHaveLength(0);
-    expect(screen.getByText("This provider is a public service; no credentials needed.")).toBeTruthy();
     await userEvent.click(screen.getByRole("button", { name: "Add Baidu Proxy" }));
     await waitFor(() => expect(api.login).toHaveBeenCalledWith("baidu", {}));
   });
@@ -348,7 +346,6 @@ describe("access token and browser session", () => {
     expect(screen.getByText("Providers", { exact: true })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Refresh all" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove all" })).toBeTruthy();
-    expect(screen.getByText("Service", { exact: true })).toBeTruthy();
     expect(screen.getByText("Subscription link", { exact: true })).toBeTruthy();
     expect(screen.queryByRole("tree", { name: "Nodes by group" })).toBeNull();
 
@@ -357,7 +354,6 @@ describe("access token and browser session", () => {
     expect(screen.queryByText("Providers", { exact: true })).toBeNull();
     expect(screen.queryByRole("button", { name: "Refresh all" })).toBeNull();
     expect(screen.queryByRole("button", { name: "Remove all" })).toBeNull();
-    expect(screen.queryByText("Service", { exact: true })).toBeNull();
     expect(screen.queryByText("Subscription link", { exact: true })).toBeNull();
     expect(await screen.findByRole("tree", { name: "Nodes by group" })).toBeTruthy();
 
@@ -365,7 +361,6 @@ describe("access token and browser session", () => {
     expect(screen.getByText("Providers", { exact: true })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Refresh all" })).toBeTruthy();
     expect(screen.getByRole("button", { name: "Remove all" })).toBeTruthy();
-    expect(screen.getByText("Service", { exact: true })).toBeTruthy();
     expect(screen.getByText("Subscription link", { exact: true })).toBeTruthy();
     expect(screen.queryByRole("tree", { name: "Nodes by group" })).toBeNull();
   });
@@ -376,7 +371,7 @@ describe("access token and browser session", () => {
     Object.assign(api, { subscriptionURL: vi.fn().mockReturnValue(pendingSubscription.promise) });
     render(<App api={api} />);
 
-    expect(await screen.findByText("Service", { exact: true })).toBeTruthy();
+    expect(await screen.findByText("Providers", { exact: true })).toBeTruthy();
     expect(screen.getByText("Subscription link", { exact: true })).toBeTruthy();
     expect(screen.getByText("Loading link…")).toBeTruthy();
 
@@ -438,9 +433,9 @@ describe("access token and browser session", () => {
     await screen.findByRole("heading", { name: "Service status" });
     await userEvent.click(screen.getByRole("button", { name: "KuaiFan" }));
     expect(screen.queryByRole("button", { name: "Add KuaiFan" })).toBeNull();
-    await userEvent.click(screen.getByRole("button", { name: "Refresh provider" }));
+    await userEvent.click(screen.getByRole("button", { name: "Refresh" }));
     await waitFor(() => expect(api.refresh).toHaveBeenCalledWith("kuaifan"));
-    await userEvent.click(screen.getByRole("button", { name: "Remove provider" }));
+    await userEvent.click(screen.getByRole("button", { name: "Remove" }));
     await userEvent.click(screen.getByRole("button", { name: "Confirm removal" }));
     await waitFor(() => expect(api.logoutAccount).toHaveBeenCalledWith("kuaifan"));
     expect(api.lockConsole).not.toHaveBeenCalled();
@@ -457,6 +452,8 @@ describe("access token and browser session", () => {
     await screen.findByRole("heading", { name: "Service status" });
 
     await userEvent.click(screen.getByRole("button", { name: "Remove all" }));
+    expect(api.logoutAccount).not.toHaveBeenCalled();
+    await userEvent.click(screen.getByRole("button", { name: "Remove 2 providers" }));
 
     await waitFor(() => expect(api.logoutAccount).toHaveBeenCalledTimes(2));
     expect(api.logoutAccount).toHaveBeenNthCalledWith(1, "kuaifan");
@@ -532,6 +529,26 @@ describe("access token and browser session", () => {
     expect(screen.queryByText("Service is ready.", { exact: true })).toBeNull();
     expect(screen.queryByText("Legacy tunnel", { exact: true })).toBeNull();
     expect(screen.queryByText("Connections", { exact: true })).toBeNull();
+  });
+
+  it("names the failing provider and its cause when the service needs attention", async () => {
+    const status = readyStatus();
+    status.state = "degraded";
+    status.accounts = {
+      ...status.accounts,
+      kuaifan: { ...status.accounts!.kuaifan, refreshStatus: "refresh_failing", refreshProblem: "network", nextRefreshAt: "2026-07-15T10:30:00Z" },
+      quickfox: { provider: "quickfox", display: "q•••@example.com", tier: "VIP", subscriptionActive: true, refreshStatus: "needs_relogin", refreshProblem: "session_rejected" },
+    };
+    render(<App api={makeApi(status)} />);
+    const problems = await screen.findByRole("list", { name: "Provider problems" });
+    expect(within(problems).getAllByRole("listitem")).toHaveLength(2);
+    expect(problems.textContent).toContain("Can't reach provider");
+    expect(problems.textContent).toContain("Automatic refresh paused.");
+
+    await userEvent.click(within(problems).getByRole("button", { name: /QuickFox/ }));
+    expect(screen.getByText("QuickFox", { selector: "[data-slot='card-title']" })).toBeTruthy();
+    expect(screen.getByText("Provider ended the session.", { selector: "strong" })).toBeTruthy();
+    expect(screen.getByText("Paused", { exact: true })).toBeTruthy();
   });
 
   it("avoids browser storage while rendering the status console", async () => {

@@ -22,7 +22,7 @@ export const stateDetails: Record<ServiceState, StatusDetail> = {
     ready: { label: "Ready", message: "Service is ready.", tone: "ready" },
     degraded: {
         label: "Needs attention",
-        message: "Saved nodes are still available.",
+        message: "The last refresh failed. Existing nodes still work.",
         tone: "warning",
     },
     expired: {
@@ -32,7 +32,7 @@ export const stateDetails: Record<ServiceState, StatusDetail> = {
     },
     error: {
         label: "Service error",
-        message: "Service status could not be completed.",
+        message: "No provider session is usable. Refresh or add the provider again.",
         tone: "danger",
     },
 };

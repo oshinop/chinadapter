@@ -1,23 +1,16 @@
 import { useMemo } from "react";
-import type { Dispatch, SetStateAction } from "react";
+import type { Dispatch, ReactNode, SetStateAction } from "react";
 import { LockKeyhole } from "lucide-react";
 import type { ApiClient } from "./api";
 import type { NodeRecord, StatusResponse } from "./types";
 import { FormError } from "@/components/forms";
-import { Metric } from "@/components/Metric";
 import { Button } from "@/components/ui/button";
-import {
-    Card,
-    CardContent,
-    CardFooter,
-    CardHeader,
-    CardTitle,
-} from "@/components/ui/card";
 import { TooltipProvider } from "@/components/ui/tooltip";
 import { AccessTokenCard } from "@/features/access/AccessTokenCard";
 import { LoadingCard } from "@/features/access/LoadingCard";
 import { useConsoleSession } from "@/features/access/useConsoleSession";
 import { AccountPanel } from "@/features/accounts/AccountPanel";
+import { accountIssue, accountTone, lampClass } from "@/features/accounts/accountHealth";
 import { ProviderLoginCard } from "@/features/accounts/ProviderLoginCard";
 import { providerLabel, providerLoginStates } from "@/features/accounts/providers";
 import { StatusBadge, stateDetails } from "@/features/accounts/StatusBadge";
@@ -25,7 +18,7 @@ import { useAccountViews } from "@/features/accounts/useAccountViews";
 import { NodeList } from "@/features/nodes/NodeList";
 import { SubscriptionLinkCard } from "@/features/subscription/SubscriptionLinkCard";
 import { useSubscriptionLink } from "@/features/subscription/useSubscriptionLink";
-import { formatTime } from "@/lib/time";
+import { cn } from "@/lib/utils";
 
 interface AppProps {
     api?: ApiClient;
@@ -162,6 +155,10 @@ function StatusConsole({
             : eligibleNodes.filter((node) => node.provider === activeProvider);
     const activeAccount =
         activeProvider === "all" ? undefined : accounts[activeProvider];
+    const issues = status.providers.flatMap((provider) => {
+        const issue = accountIssue(accounts[provider]);
+        return issue ? [{ provider, ...issue }] : [];
+    });
 
     return (
         <main className="min-h-screen bg-background px-4 py-6 text-foreground sm:px-6 lg:px-10">
@@ -172,42 +169,61 @@ function StatusConsole({
                             Chinadapter
                         </p>
                         <p className="hidden text-[0.625rem] uppercase tracking-[0.24em] text-muted-foreground sm:block">
-                            Local control plane · v{status.version}
+                            v{status.version}
                         </p>
                     </div>
-                    <div className="mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-end">
-                        <div>
+                    <div className="mt-4 flex flex-col justify-between gap-4 sm:flex-row sm:items-start">
+                        <div className="min-w-0">
                             <div className="flex flex-nowrap items-center gap-2 sm:gap-3">
                                 <h1 className="whitespace-nowrap font-sans text-xl font-semibold uppercase tracking-[0.04em] sm:text-2xl">
                                     Service status
                                 </h1>
                                 <StatusBadge detail={detail} />
                             </div>
-                            {status.state === "ready" ? null : (
+                            {issues.length > 0 ? (
+                                <ul
+                                    aria-label="Provider problems"
+                                    className="mt-3 grid gap-1"
+                                >
+                                    {issues.map((issue) => (
+                                        <li key={issue.provider}>
+                                            <button
+                                                className="group flex min-w-0 items-baseline gap-2 text-left text-sm"
+                                                onClick={() =>
+                                                    selectProvider(issue.provider)
+                                                }
+                                                type="button"
+                                            >
+                                                <span
+                                                    aria-hidden="true"
+                                                    className={`led ${lampClass[issue.tone]} relative -top-px`}
+                                                />
+                                                <span className="font-sans font-semibold uppercase tracking-[0.06em] group-hover:text-primary">
+                                                    {providerLabel(issue.provider)}
+                                                </span>
+                                                <span className="text-muted-foreground">
+                                                    {issue.summary}. {issue.action}
+                                                </span>
+                                            </button>
+                                        </li>
+                                    ))}
+                                </ul>
+                            ) : status.state === "ready" ? null : (
                                 <p className="mt-2 text-sm text-muted-foreground">
                                     {detail.message}
                                 </p>
                             )}
                         </div>
-                        <div className="flex flex-nowrap items-center gap-1 sm:gap-2">
-                            <Button
-                                aria-label="Lock console"
-                                onClick={() => void onLockConsole()}
-                                size="sm"
-                                variant="outline"
-                            >
-                                <LockKeyhole className="size-4" />
-                                <span aria-hidden="true" className="sm:hidden">
-                                    Lock
-                                </span>
-                                <span
-                                    aria-hidden="true"
-                                    className="hidden sm:inline"
-                                >
-                                    Lock console
-                                </span>
-                            </Button>
-                        </div>
+                        <Button
+                            aria-label="Lock console"
+                            className="shrink-0 self-start"
+                            onClick={() => void onLockConsole()}
+                            size="sm"
+                            variant="outline"
+                        >
+                            <LockKeyhole className="size-4" />
+                            <span aria-hidden="true">Lock</span>
+                        </Button>
                     </div>
                 </header>
 
@@ -215,35 +231,24 @@ function StatusConsole({
                     aria-label="Console views"
                     className="flex gap-2 overflow-x-auto border-b border-border pb-3"
                 >
-                    <Button
-                        aria-pressed={activeProvider === "all"}
+                    <ViewTab
+                        active={activeProvider === "all"}
                         onClick={() => selectProvider("all")}
-                        size="sm"
-                        variant={
-                            activeProvider === "all" ? "default" : "outline"
-                        }
                     >
                         Status
-                    </Button>
+                    </ViewTab>
                     {status.providers.map((provider) => (
-                        <Button
-                            aria-pressed={activeProvider === provider}
-                            className="shrink-0"
+                        <ViewTab
+                            active={activeProvider === provider}
                             key={provider}
                             onClick={() => selectProvider(provider)}
-                            size="sm"
-                            variant={
-                                activeProvider === provider
-                                    ? "default"
-                                    : "outline"
-                            }
                         >
                             <span
                                 aria-hidden="true"
-                                className={`led ${accounts[provider] ? "led--ok" : ""}`}
+                                className={`led ${lampClass[accountTone(accounts[provider])]}`}
                             />
                             {providerLabel(provider)}
-                        </Button>
+                        </ViewTab>
                     ))}
                 </nav>
 
@@ -259,44 +264,10 @@ function StatusConsole({
                     onSignOutAll={onSignOutAll}
                     refreshing={refreshing}
                     status={status}
-                    visibleNodes={visibleNodes}
                 />
 
                 {activeProvider === "all" ? (
-                    <section className="grid gap-4 md:grid-cols-[0.9fr_1.5fr]">
-                        <Card className="panel">
-                            <CardHeader>
-                                <CardTitle>Service</CardTitle>
-                            </CardHeader>
-                            <CardContent className="grid gap-5 sm:grid-cols-2 md:grid-cols-1 lg:grid-cols-2">
-                                <Metric
-                                    label="Accounts"
-                                    value={`${Object.keys(accounts).length} / ${status.providers.length}`}
-                                />
-                                <Metric
-                                    label="Available nodes"
-                                    value={`${status.nodes.eligible} / ${status.nodes.total}`}
-                                />
-                            </CardContent>
-                            <CardFooter className="gap-2 text-xs text-muted-foreground">
-                                <span
-                                    aria-hidden="true"
-                                    className={`led ${refreshing ? "led--warn led--pulse" : "led--ok"}`}
-                                />
-                                <span
-                                    className="min-w-0 truncate"
-                                    title={`Updated ${formatTime(status.controlPlane.lastRefreshAt)}`}
-                                >
-                                    Updated{" "}
-                                    {formatTime(
-                                        status.controlPlane.lastRefreshAt,
-                                    )}
-                                </span>
-                            </CardFooter>
-                        </Card>
-
-                        <SubscriptionLinkCard link={subscriptionLink} />
-                    </section>
+                    <SubscriptionLinkCard link={subscriptionLink} />
                 ) : null}
 
                 {activeAccount ? (
@@ -310,5 +281,32 @@ function StatusConsole({
                 ) : null}
             </div>
         </main>
+    );
+}
+
+// Selected tabs are tinted rather than filled so their status lamp stays visible.
+function ViewTab({
+    active,
+    children,
+    onClick,
+}: {
+    active: boolean;
+    children: ReactNode;
+    onClick: () => void;
+}) {
+    return (
+        <Button
+            aria-pressed={active}
+            className={cn(
+                "shrink-0",
+                active &&
+                    "border-primary/70 bg-primary/10 text-primary hover:bg-primary/15",
+            )}
+            onClick={onClick}
+            size="sm"
+            variant="outline"
+        >
+            {children}
+        </Button>
     );
 }

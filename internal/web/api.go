@@ -137,6 +137,7 @@ type Account struct {
 	SubscriptionActive bool       `json:"subscriptionActive"`
 	SubscriptionEndsAt *time.Time `json:"subscriptionEndsAt,omitempty"`
 	RefreshStatus      string     `json:"refreshStatus,omitempty"`
+	RefreshProblem     string     `json:"refreshProblem,omitempty"`
 	LastRefreshAt      time.Time  `json:"lastRefreshAt,omitzero"`
 	NextRefreshAt      time.Time  `json:"nextRefreshAt,omitzero"`
 }

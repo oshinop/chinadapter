@@ -173,7 +173,7 @@ func (r *Runtime) Login(ctx context.Context, input web.LoginInput) (web.Account,
 	result := browserAccount(string(id), account.Display, account.Tier, account.SubscriptionActive, account.SubscriptionEndsAt)
 	r.accounts.RecordSuccess(id)
 	schedule := r.accounts.Status()[id]
-	result.RefreshStatus, result.LastRefreshAt, result.NextRefreshAt = schedule.Status, schedule.LastSuccess, schedule.NextRun
+	result.RefreshStatus, result.RefreshProblem, result.LastRefreshAt, result.NextRefreshAt = schedule.Status, schedule.Problem, schedule.LastSuccess, schedule.NextRun
 	r.publishState()
 	return result, nil
 }

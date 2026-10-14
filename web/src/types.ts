@@ -9,12 +9,19 @@ export type ServiceState =
 
 export type NodeHealth = "healthy" | "degraded" | "unhealthy" | "unknown";
 
+export type RefreshStatus = "ok" | "refresh_failing" | "needs_relogin";
+
 export interface AccountSummary {
   provider: string;
   display: string;
   tier: string;
   subscriptionActive: boolean;
   subscriptionEndsAt?: string;
+  refreshStatus?: RefreshStatus;
+  /** Redacted class of the latest failed refresh, e.g. "network". */
+  refreshProblem?: string;
+  lastRefreshAt?: string;
+  nextRefreshAt?: string;
 }
 
 export interface ProviderAuthSpec {
